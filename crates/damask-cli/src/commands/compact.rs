@@ -102,11 +102,9 @@ pub fn run(namespace: Option<&str>, aggressive: bool) -> Result<()> {
             }
         }
 
-        if removed > 0 {
-            // Write compacted view to .views/ — source JSONL stays untouched
-            let view_path = views_dir.join(format!("{}.current.jsonl", ns));
-            FactWriter::write_all(&view_path, &kept).map_err(|e| anyhow::anyhow!("{}", e))?;
-        }
+        // Always write the view so external consumers get a fresh snapshot
+        let view_path = views_dir.join(format!("{}.current.jsonl", ns));
+        FactWriter::write_all(&view_path, &kept).map_err(|e| anyhow::anyhow!("{}", e))?;
 
         total_removed += removed;
         total_kept += kept.len();

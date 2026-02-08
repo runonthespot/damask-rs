@@ -126,15 +126,15 @@ mod tests {
         insert_edge(
             &conn,
             "e_endorse",
-            Some("e_endorse"),
             Some("e_content"),
+            None,
             "endorsed",
         );
         insert_edge(
             &conn,
             "e_dispute",
-            Some("e_dispute"),
             Some("e_content"),
+            None,
             "disputed",
         );
 

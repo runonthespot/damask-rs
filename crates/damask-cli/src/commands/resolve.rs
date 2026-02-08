@@ -1,5 +1,5 @@
 use anyhow::Context;
-use damask_resolve::{resolve_span, SpanAnchor};
+use damask_core::{Freshness, Recency, Resolution};
 use damask_store::{update_index, DamaskProject, IndexQuery};
 use std::env;
 use std::fs;
@@ -41,86 +41,80 @@ pub fn run(span_id: &str) -> Result<()> {
         println!("  Content hash: {hash}");
     }
 
-    // Build a SpanAnchor and run the full resolution cascade
-    let anchor = SpanAnchor {
-        path: span.path.clone(),
-        line_start: span.line_start,
-        line_end: span.line_end,
-        content_hash: span.content_hash.clone(),
-        symbol: span.symbol.clone(),
-        snippet: span.snippet.clone(),
-        commit: span.commit.clone(),
-    };
+    // Use the resolution and recency already computed during index build.
+    // The index ran the full resolve_span() cascade; re-resolving here would
+    // produce misleading results because the index stores relocated line numbers
+    // (a relocated span would re-resolve as Exact at its new location).
+    let resolution = span
+        .resolution
+        .as_deref()
+        .and_then(parse_resolution)
+        .unwrap_or(Resolution::Exact);
+    let recency = span
+        .recency
+        .as_deref()
+        .and_then(parse_recency)
+        .unwrap_or(Recency::Unknown);
+    let freshness = Freshness::new(resolution, recency);
+    let weight = freshness.resolution_weight();
 
-    match resolve_span(&project.root, &anchor) {
-        Ok(result) => {
-            let resolution = &result.freshness.resolution;
-            let recency = &result.freshness.recency;
-            let weight = result.freshness.resolution_weight();
+    println!();
+    println!("  Resolution: {:?}", resolution);
+    println!("  Recency: {:?}", recency);
+    println!("  Resolution weight: {:.2}", weight);
 
-            println!();
-            println!("  Resolution: {:?}", resolution);
-            println!("  Recency: {:?}", recency);
-            println!("  Resolution weight: {:.2}", weight);
+    // Show content at the indexed location (which is the relocated location
+    // for relocated spans, or the original location for exact spans).
+    if let (Some(start), Some(end)) = (span.line_start, span.line_end) {
+        let file_path = project.root.join(&span.path);
+        if file_path.exists() {
+            if let Ok(file) = fs::File::open(&file_path) {
+                let reader = BufReader::new(file);
+                let file_lines: Vec<String> =
+                    reader.lines().collect::<std::io::Result<Vec<_>>>().unwrap_or_default();
 
-            // Show relocated lines if applicable
-            if let Some((new_start, new_end)) = result.new_lines {
-                println!(
-                    "  Relocated to: {}:{}-{}",
-                    span.path, new_start, new_end
-                );
+                let label = if resolution == Resolution::Relocated {
+                    "Content (relocated)"
+                } else {
+                    "Content"
+                };
 
-                // Show content at new location
-                let file_path = project.root.join(&span.path);
-                if file_path.exists() {
-                    if let Ok(file) = fs::File::open(&file_path) {
-                        let reader = BufReader::new(file);
-                        let file_lines: Vec<String> =
-                            reader.lines().collect::<std::io::Result<Vec<_>>>().unwrap_or_default();
-
-                        println!();
-                        println!("  Content (relocated):");
-                        for (i, line) in file_lines
-                            .iter()
-                            .enumerate()
-                            .skip((new_start - 1) as usize)
-                            .take((new_end - new_start + 1) as usize)
-                        {
-                            println!("    {:>4} │ {}", i + 1, line);
-                        }
-                    }
-                }
-            } else if matches!(resolution, damask_core::Resolution::Exact) {
-                // Show content at original location
-                if let (Some(start), Some(end)) = (span.line_start, span.line_end) {
-                    let file_path = project.root.join(&span.path);
-                    if file_path.exists() {
-                        if let Ok(file) = fs::File::open(&file_path) {
-                            let reader = BufReader::new(file);
-                            let file_lines: Vec<String> =
-                                reader.lines().collect::<std::io::Result<Vec<_>>>().unwrap_or_default();
-
-                            println!();
-                            println!("  Content:");
-                            for (i, line) in file_lines
-                                .iter()
-                                .enumerate()
-                                .skip((start - 1) as usize)
-                                .take((end - start + 1) as usize)
-                            {
-                                println!("    {:>4} │ {}", i + 1, line);
-                            }
-                        }
-                    }
+                println!();
+                println!("  {}:", label);
+                for (i, line) in file_lines
+                    .iter()
+                    .enumerate()
+                    .skip((start - 1) as usize)
+                    .take((end - start + 1) as usize)
+                {
+                    println!("    {:>4} │ {}", i + 1, line);
                 }
             }
-        }
-        Err(e) => {
+        } else {
             println!();
-            println!("  Resolution failed: {e}");
+            println!("  File not found: {}", span.path);
         }
     }
 
     println!();
     Ok(())
+}
+
+fn parse_resolution(s: &str) -> Option<Resolution> {
+    match s {
+        "exact" => Some(Resolution::Exact),
+        "relocated" => Some(Resolution::Relocated),
+        "unresolved" => Some(Resolution::Unresolved),
+        "missing" => Some(Resolution::Missing),
+        _ => None,
+    }
+}
+
+fn parse_recency(s: &str) -> Option<Recency> {
+    match s {
+        "unchanged" => Some(Recency::Unchanged),
+        "file_changed" => Some(Recency::FileChanged),
+        "unknown" => Some(Recency::Unknown),
+        _ => None,
+    }
 }

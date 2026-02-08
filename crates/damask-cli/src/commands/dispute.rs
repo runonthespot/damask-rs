@@ -30,8 +30,8 @@ pub fn run(edge_id: &str, payload: &str) -> Result<()> {
 
     let edge = Edge {
         id: EdgeId::new(),
-        from: None,
-        to: Some(target),
+        from: Some(target),
+        to: None,
         rel: "disputed".to_string(),
         payload: payload_value,
         ns: ns.clone(),

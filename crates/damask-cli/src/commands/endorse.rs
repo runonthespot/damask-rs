@@ -32,8 +32,8 @@ pub fn run(edge_id: &str, payload: Option<&str>) -> Result<()> {
 
     let edge = Edge {
         id: EdgeId::new(),
-        from: None,
-        to: Some(target),
+        from: Some(target),
+        to: None,
         rel: "endorsed".to_string(),
         payload: payload_value,
         ns: ns.clone(),

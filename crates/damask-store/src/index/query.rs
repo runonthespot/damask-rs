@@ -167,12 +167,13 @@ impl<'a> IndexQuery<'a> {
     }
 
     /// Count endorsements for a given edge ID.
+    /// Meta-edges use from_id = target edge (the edge being endorsed).
     pub fn endorsement_count(&self, edge_id: &str) -> Result<u32, StoreError> {
         let count: u32 = self
             .conn
             .query_row(
                 "SELECT COUNT(DISTINCT COALESCE(agent || ':' || session, agent, id))
-                 FROM edges WHERE rel = 'endorsed' AND to_id = ?1",
+                 FROM edges WHERE rel = 'endorsed' AND from_id = ?1",
                 rusqlite::params![edge_id],
                 |row| row.get(0),
             )
@@ -181,12 +182,13 @@ impl<'a> IndexQuery<'a> {
     }
 
     /// Count disputes for a given edge ID.
+    /// Meta-edges use from_id = target edge (the edge being disputed).
     pub fn dispute_count(&self, edge_id: &str) -> Result<u32, StoreError> {
         let count: u32 = self
             .conn
             .query_row(
                 "SELECT COUNT(DISTINCT COALESCE(agent || ':' || session, agent, id))
-                 FROM edges WHERE rel = 'disputed' AND to_id = ?1",
+                 FROM edges WHERE rel = 'disputed' AND from_id = ?1",
                 rusqlite::params![edge_id],
                 |row| row.get(0),
             )
@@ -195,11 +197,12 @@ impl<'a> IndexQuery<'a> {
     }
 
     /// Get the most recent endorsement timestamp for an edge.
+    /// Meta-edges use from_id = target edge.
     pub fn latest_endorsement_ts(&self, edge_id: &str) -> Result<Option<String>, StoreError> {
         let result: Option<String> = self
             .conn
             .query_row(
-                "SELECT MAX(ts) FROM edges WHERE rel = 'endorsed' AND to_id = ?1",
+                "SELECT MAX(ts) FROM edges WHERE rel = 'endorsed' AND from_id = ?1",
                 rusqlite::params![edge_id],
                 |row| row.get(0),
             )
@@ -718,14 +721,15 @@ mod tests {
     fn endorsement_counting() {
         let conn = setup_db();
         insert_edge(&conn, "e_1", Some("s_1"), None, "risk");
+        // Meta-edges use from_id = target edge being endorsed
         conn.execute(
             "INSERT INTO edges (id, from_id, to_id, rel, payload, ns, ts, agent, session)
-             VALUES ('e_end1', 'e_end1', 'e_1', 'endorsed', '{}', 'test', '2025-01-02T00:00:00Z', 'agent-a', 'sess1')",
+             VALUES ('e_end1', 'e_1', NULL, 'endorsed', '{}', 'test', '2025-01-02T00:00:00Z', 'agent-a', 'sess1')",
             [],
         ).unwrap();
         conn.execute(
             "INSERT INTO edges (id, from_id, to_id, rel, payload, ns, ts, agent, session)
-             VALUES ('e_end2', 'e_end2', 'e_1', 'endorsed', '{}', 'test', '2025-01-03T00:00:00Z', 'agent-b', 'sess2')",
+             VALUES ('e_end2', 'e_1', NULL, 'endorsed', '{}', 'test', '2025-01-03T00:00:00Z', 'agent-b', 'sess2')",
             [],
         ).unwrap();
 
