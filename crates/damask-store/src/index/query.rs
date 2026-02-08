@@ -293,9 +293,14 @@ impl<'a> IndexQuery<'a> {
 
     /// Find all edges targeting a given ID (for `why` and `blame`).
     /// Includes both active and inactive edges (to show full provenance).
+    /// Checks to_id for supersedes/invalidates and from_id for endorsed/disputed
+    /// (meta-edges use from_id = target edge).
     pub fn edges_targeting(&self, id: &str) -> Result<Vec<EdgeRow>, StoreError> {
         let sql = format!(
-            "SELECT {EDGE_COLS} FROM edges WHERE to_id = ?1 ORDER BY ts"
+            "SELECT {EDGE_COLS} FROM edges
+             WHERE to_id = ?1
+                OR (from_id = ?1 AND rel IN ('endorsed', 'disputed'))
+             ORDER BY ts"
         );
         let mut stmt = self
             .conn

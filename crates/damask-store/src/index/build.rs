@@ -205,8 +205,8 @@ fn schema_is_current(conn: &Connection) -> bool {
         return false;
     }
 
-    // Check that spans table has the source_file column (added in current schema)
-    let has_source_file: bool = conn
+    // Check that both spans and edges have the source_file column (added in current schema)
+    let has_spans_source: bool = conn
         .query_row(
             "SELECT COUNT(*) > 0 FROM pragma_table_info('spans') WHERE name='source_file'",
             [],
@@ -214,7 +214,15 @@ fn schema_is_current(conn: &Connection) -> bool {
         )
         .unwrap_or(false);
 
-    has_source_file
+    let has_edges_source: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('edges') WHERE name='source_file'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+
+    has_spans_source && has_edges_source
 }
 
 /// Delete all spans and edges that originated from the given source files.
