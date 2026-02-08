@@ -742,4 +742,36 @@ mod tests {
         assert_eq!(q.endorsement_count("e_1").unwrap(), 2);
         assert_eq!(q.dispute_count("e_1").unwrap(), 0);
     }
+
+    #[test]
+    fn edges_targeting_finds_endorsements_and_disputes() {
+        let conn = setup_db();
+        insert_edge(&conn, "e_1", Some("s_1"), None, "risk");
+        // Endorsement: from_id = target edge (e_1), to_id = null
+        conn.execute(
+            "INSERT INTO edges (id, from_id, to_id, rel, payload, ns, ts)
+             VALUES ('e_end1', 'e_1', NULL, 'endorsed', '{}', 'test', '2025-01-02T00:00:00Z')",
+            [],
+        ).unwrap();
+        // Dispute: from_id = target edge (e_1), to_id = null
+        conn.execute(
+            "INSERT INTO edges (id, from_id, to_id, rel, payload, ns, ts)
+             VALUES ('e_dis1', 'e_1', NULL, 'disputed', '{\"summary\":\"wrong\"}', 'test', '2025-01-03T00:00:00Z')",
+            [],
+        ).unwrap();
+        // Supersedes: from_id = new edge, to_id = target edge (e_1)
+        insert_edge(&conn, "e_new", Some("s_1"), None, "risk");
+        insert_edge(&conn, "e_sup", Some("e_new"), Some("e_1"), "supersedes");
+
+        let q = IndexQuery::new(&conn);
+        let targeting = q.edges_targeting("e_1").unwrap();
+
+        let endorsed: Vec<_> = targeting.iter().filter(|e| e.rel == "endorsed").collect();
+        let disputed: Vec<_> = targeting.iter().filter(|e| e.rel == "disputed").collect();
+        let superseded: Vec<_> = targeting.iter().filter(|e| e.rel == "supersedes").collect();
+
+        assert_eq!(endorsed.len(), 1, "should find endorsement via from_id");
+        assert_eq!(disputed.len(), 1, "should find dispute via from_id");
+        assert_eq!(superseded.len(), 1, "should find supersedes via to_id");
+    }
 }

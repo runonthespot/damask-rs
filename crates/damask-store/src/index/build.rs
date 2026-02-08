@@ -222,7 +222,16 @@ fn schema_is_current(conn: &Connection) -> bool {
         )
         .unwrap_or(false);
 
-    has_spans_source && has_edges_source
+    // Check that edges_fts virtual table exists (needed for search)
+    let has_fts: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='edges_fts'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+
+    has_spans_source && has_edges_source && has_fts
 }
 
 /// Delete all spans and edges that originated from the given source files.
@@ -420,4 +429,50 @@ fn insert_facts(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::schema::create_schema;
+
+    #[test]
+    fn schema_is_current_with_full_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_schema(&conn).unwrap();
+        assert!(schema_is_current(&conn));
+    }
+
+    #[test]
+    fn schema_is_current_rejects_empty_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert!(!schema_is_current(&conn));
+    }
+
+    #[test]
+    fn schema_is_current_rejects_missing_source_file_on_spans() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE spans (id TEXT PRIMARY KEY, path TEXT NOT NULL, ns TEXT NOT NULL, ts TEXT NOT NULL);
+            CREATE TABLE edges (id TEXT PRIMARY KEY, rel TEXT NOT NULL, payload TEXT NOT NULL, ns TEXT NOT NULL, ts TEXT NOT NULL, source_file TEXT);
+            CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE VIRTUAL TABLE edges_fts USING fts5(payload, content=edges, content_rowid=rowid);
+            ",
+        ).unwrap();
+        assert!(!schema_is_current(&conn));
+    }
+
+    #[test]
+    fn schema_is_current_rejects_missing_fts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE spans (id TEXT PRIMARY KEY, path TEXT NOT NULL, ns TEXT NOT NULL, ts TEXT NOT NULL, source_file TEXT);
+            CREATE TABLE edges (id TEXT PRIMARY KEY, rel TEXT NOT NULL, payload TEXT NOT NULL, ns TEXT NOT NULL, ts TEXT NOT NULL, source_file TEXT);
+            CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            ",
+        ).unwrap();
+        assert!(!schema_is_current(&conn));
+    }
 }

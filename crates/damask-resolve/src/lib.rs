@@ -260,9 +260,12 @@ fn search_file_for_snippet(lines: &[String], snippet: &str) -> Option<(u32, u32)
 }
 
 /// Compute recency by checking if the file has changed since the span's commit.
+/// Checks both committed changes (HEAD vs span commit) and uncommitted working
+/// tree changes (disk content vs HEAD blob).
 fn compute_recency(project_root: &Path, file_path: &str, commit_sha: Option<&str>) -> Recency {
     let Some(sha) = commit_sha else {
-        return Recency::Unknown;
+        // No commit reference — check working tree against HEAD as a best-effort
+        return working_tree_recency(project_root, file_path);
     };
 
     // Try to open the git repo
@@ -288,35 +291,59 @@ fn compute_recency(project_root: &Path, file_path: &str, commit_sha: Option<&str
         Err(_) => return Recency::Unknown,
     };
 
-    let entry = match tree.get_path(Path::new(file_path)) {
+    let span_entry = match tree.get_path(Path::new(file_path)) {
         Ok(e) => e,
         Err(_) => return Recency::Unknown,
     };
 
-    // Get current HEAD's tree
-    let head = match repo.head() {
-        Ok(h) => h,
+    // First check: has the file changed on disk compared to the span's commit blob?
+    // This catches both committed and uncommitted changes in one comparison.
+    let abs_path = project_root.join(file_path);
+    if let Ok(disk_content) = fs::read(&abs_path) {
+        let span_blob = match repo.find_blob(span_entry.id()) {
+            Ok(b) => b,
+            Err(_) => return Recency::Unknown,
+        };
+        if disk_content == span_blob.content() {
+            return Recency::Unchanged;
+        } else {
+            return Recency::FileChanged;
+        }
+    }
+
+    // File doesn't exist on disk — it was removed
+    Recency::FileChanged
+}
+
+/// Best-effort recency when no commit SHA is available: compare disk content
+/// against HEAD blob.
+fn working_tree_recency(project_root: &Path, file_path: &str) -> Recency {
+    let repo = match git2::Repository::discover(project_root) {
+        Ok(r) => r,
         Err(_) => return Recency::Unknown,
     };
 
-    let head_commit = match head.peel_to_commit() {
-        Ok(c) => c,
-        Err(_) => return Recency::Unknown,
-    };
-
-    let head_tree = match head_commit.tree() {
+    let head_tree = match repo.head().and_then(|h| h.peel_to_tree()) {
         Ok(t) => t,
         Err(_) => return Recency::Unknown,
     };
 
     let head_entry = match head_tree.get_path(Path::new(file_path)) {
         Ok(e) => e,
-        Err(_) => return Recency::FileChanged, // File removed since commit
+        Err(_) => return Recency::Unknown,
     };
 
-    // Compare blob OIDs
-    if entry.id() == head_entry.id() {
-        Recency::Unchanged
+    let abs_path = project_root.join(file_path);
+    if let Ok(disk_content) = fs::read(&abs_path) {
+        let head_blob = match repo.find_blob(head_entry.id()) {
+            Ok(b) => b,
+            Err(_) => return Recency::Unknown,
+        };
+        if disk_content == head_blob.content() {
+            Recency::Unchanged
+        } else {
+            Recency::FileChanged
+        }
     } else {
         Recency::FileChanged
     }
