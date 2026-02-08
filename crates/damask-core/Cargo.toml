@@ -1,0 +1,14 @@
+[package]
+name = "damask-core"
+description = "Core data types for the Damask knowledge fabric"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+ulid = { workspace = true }

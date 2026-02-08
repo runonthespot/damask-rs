@@ -1,0 +1,19 @@
+[package]
+name = "damask-store"
+description = "JSONL storage, SQLite index, and query engine for Damask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+damask-core = { workspace = true }
+damask-resolve = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+rusqlite = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

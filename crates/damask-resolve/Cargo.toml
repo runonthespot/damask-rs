@@ -1,0 +1,17 @@
+[package]
+name = "damask-resolve"
+description = "Span resolution, content hashing, and freshness tracking for Damask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+damask-core = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+git2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,17 @@
+[package]
+name = "damask-tui"
+description = "Interactive terminal UI for exploring a Damask knowledge fabric"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+damask-core = { workspace = true }
+damask-store = { workspace = true }
+damask-resolve = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+rusqlite = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }

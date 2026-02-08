@@ -1,0 +1,6 @@
+index.db
+index.db-wal
+index.db-shm
+edges/.private/
+edges/.views/
+edges/.local/
