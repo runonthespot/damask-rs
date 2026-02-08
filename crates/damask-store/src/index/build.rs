@@ -50,16 +50,9 @@ pub fn update_index(db_path: &Path, edges_dir: &Path) -> Result<Connection, Stor
 
     let conn = Connection::open(db_path).map_err(|e| StoreError::Io(e.to_string()))?;
 
-    // Verify schema exists — if not, full rebuild
-    let has_schema: bool = conn
-        .query_row(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='index_meta'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
-
-    if !has_schema {
+    // Verify schema exists and is current — if not, full rebuild.
+    // Check for index_meta table AND source_file column on spans (added in current schema).
+    if !schema_is_current(&conn) {
         drop(conn);
         return rebuild_index(db_path, edges_dir);
     }
@@ -67,8 +60,12 @@ pub fn update_index(db_path: &Path, edges_dir: &Path) -> Result<Connection, Stor
     let jsonl_files = list_jsonl_files(edges_dir);
     let changed_files = find_changed_files(&conn, &jsonl_files)?;
 
-    if changed_files.is_empty() {
-        // Nothing changed — return existing index
+    // Detect deleted JSONL files before the early-return: mtime entries whose
+    // paths no longer exist on disk. Must run even when no files changed.
+    let deleted_files = find_deleted_files(&conn, &jsonl_files)?;
+
+    if changed_files.is_empty() && deleted_files.is_empty() {
+        // Nothing changed and nothing deleted — return existing index
         return Ok(conn);
     }
 
@@ -78,22 +75,23 @@ pub fn update_index(db_path: &Path, edges_dir: &Path) -> Result<Connection, Stor
         .and_then(|p| p.parent())
         .unwrap_or(edges_dir);
 
-    // Delete rows from changed files before re-inserting (prevents ghost rows)
-    delete_facts_for_files(&conn, &changed_files)?;
-
-    // Detect deleted JSONL files: mtime entries whose paths no longer exist on disk
-    let deleted_files = find_deleted_files(&conn, &jsonl_files)?;
+    // Purge rows from deleted files
     if !deleted_files.is_empty() {
         delete_facts_for_files(&conn, &deleted_files)?;
         remove_file_mtimes(&conn, &deleted_files)?;
     }
 
-    // Re-read only changed files and insert their facts
-    let new_facts = read_facts_from_files(&changed_files)?;
-    insert_facts(&conn, &new_facts, project_root)?;
+    // Delete rows from changed files before re-inserting (prevents ghost rows)
+    if !changed_files.is_empty() {
+        delete_facts_for_files(&conn, &changed_files)?;
 
-    // Update mtimes for changed files
-    store_file_mtimes(&conn, &changed_files)?;
+        // Re-read only changed files and insert their facts
+        let new_facts = read_facts_from_files(&changed_files)?;
+        insert_facts(&conn, &new_facts, project_root)?;
+
+        // Update mtimes for changed files
+        store_file_mtimes(&conn, &changed_files)?;
+    }
 
     // Recompute active state (cheap — just 3 SQL statements)
     compute_active_state(&conn)?;
@@ -189,6 +187,34 @@ fn store_file_mtimes(
     }
 
     Ok(())
+}
+
+/// Check that the DB has the current schema: index_meta table exists and
+/// the spans table has the source_file column. Returns false if the DB
+/// needs a full rebuild (missing tables or outdated schema).
+fn schema_is_current(conn: &Connection) -> bool {
+    let has_index_meta: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='index_meta'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+
+    if !has_index_meta {
+        return false;
+    }
+
+    // Check that spans table has the source_file column (added in current schema)
+    let has_source_file: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('spans') WHERE name='source_file'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+
+    has_source_file
 }
 
 /// Delete all spans and edges that originated from the given source files.
