@@ -2,8 +2,8 @@ use anyhow::Context;
 use chrono::Utc;
 use damask_core::{Freshness, PayloadEnvelope, Recency, Resolution};
 use damask_store::{
-    rank_edges, token_overlap_ratio, update_index, DamaskProject, IndexQuery, RankedEdge,
-    RankingInput,
+    rank_edges, token_overlap_ratio, update_index_with_mode, DamaskProject, IndexMode, IndexQuery,
+    RankedEdge, RankingInput,
 };
 use std::env;
 
@@ -14,7 +14,7 @@ use crate::output::Format;
 /// Maximum edges displayed by default.
 const DEFAULT_LIMIT: usize = 12;
 
-pub fn run(location: &str, format: Format, all: bool, no_rank: bool) -> Result<()> {
+pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter: Option<&str>, tag_filter: Option<&str>, undisputed: bool) -> Result<()> {
     let (file, line) = parse_location(location)?;
 
     let cwd = env::current_dir().context("failed to get current directory")?;
@@ -25,7 +25,8 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool) -> Result<(
     // Build/update the index
     let db_path = project.damask_dir.join("index.db");
     let edges_dir = project.damask_dir.join("edges");
-    let conn = update_index(&db_path, &edges_dir).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let conn = update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let config = project
         .read_config()
@@ -181,6 +182,31 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool) -> Result<(
         }
     }
 
+    // Apply native filters
+    let has_filters = rel_filter.is_some() || tag_filter.is_some() || undisputed;
+    if has_filters {
+        all_inputs.retain(|input| {
+            if let Some(rel) = rel_filter {
+                if input.edge.rel != rel {
+                    return false;
+                }
+            }
+            if let Some(tag) = tag_filter {
+                let payload: serde_json::Value =
+                    serde_json::from_str(&input.edge.payload).unwrap_or(serde_json::json!({}));
+                let env = PayloadEnvelope::new(&payload);
+                let tags = env.tags().unwrap_or_default();
+                if !tags.iter().any(|t| *t == tag) {
+                    return false;
+                }
+            }
+            if undisputed && input.dispute_count > 0 {
+                return false;
+            }
+            true
+        });
+    }
+
     let limit = if all { usize::MAX } else { DEFAULT_LIMIT };
 
     let ranked = if no_rank {
@@ -201,8 +227,23 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool) -> Result<(
         rank_edges(all_inputs, limit)
     };
 
+    // Precompute target spans for freshness glyphs in human output
+    let mut target_spans: std::collections::HashMap<
+        String,
+        damask_store::index::query::SpanRow,
+    > = std::collections::HashMap::new();
+    for re in &ranked {
+        if let Some(target_id) = edge_target_span_id(&re.edge) {
+            if !target_spans.contains_key(target_id) {
+                if let Some(span) = lookup_span(target_id) {
+                    target_spans.insert(target_id.to_string(), span);
+                }
+            }
+        }
+    }
+
     match format {
-        Format::Human => print_human(&spans, &ranked, location),
+        Format::Human => print_human(&spans, &ranked, location, &target_spans),
         Format::Json => print_json(&spans, &ranked),
     }
 
@@ -224,8 +265,9 @@ fn print_human(
     spans: &[damask_store::index::query::SpanRow],
     ranked: &[RankedEdge],
     location: &str,
+    target_spans: &std::collections::HashMap<String, damask_store::index::query::SpanRow>,
 ) {
-    // Print span header
+    // Print span header with freshness glyph
     for span in spans {
         let lines = match (span.line_start, span.line_end) {
             (Some(s), Some(e)) => format!(":{}-{}", s, e),
@@ -236,7 +278,16 @@ fn print_human(
             .as_deref()
             .map(|s| format!(" — \"{}\"", s))
             .unwrap_or_default();
-        println!("\n{}{} ({}){}\n", span.path, lines, span.id, snippet);
+
+        let glyph = freshness_glyph(span.resolution.as_deref(), span.recency.as_deref());
+
+        let glyph_suffix = if glyph.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", glyph)
+        };
+
+        println!("\n{}{} ({}){}{}\n", span.path, lines, span.id, glyph_suffix, snippet);
     }
 
     if ranked.is_empty() {
@@ -288,12 +339,29 @@ fn print_human(
             .summary()
             .unwrap_or_else(|| damask_core::truncate_str(re.edge.payload.as_str(), 60));
 
+        let target_glyph = edge_target_span_id(&re.edge)
+            .and_then(|id| target_spans.get(id))
+            .map(|span| freshness_glyph(span.resolution.as_deref(), span.recency.as_deref()))
+            .unwrap_or("");
+        let target_suffix = if target_glyph.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", target_glyph)
+        };
+
         // Namespace + date
         let date = re.edge.ts.split('T').next().unwrap_or(&re.edge.ts);
 
         println!(
-            "  {}{}{}{}{}{} — {}",
-            rel_glyph, re.edge.rel, conf, endorsement_str, dispute_str, dispute_marker, summary,
+            "  {}{}{}{}{}{}{} — {}",
+            rel_glyph,
+            re.edge.rel,
+            conf,
+            endorsement_str,
+            dispute_str,
+            dispute_marker,
+            target_suffix,
+            summary,
         );
 
         // Action line
@@ -325,6 +393,28 @@ fn parse_recency(s: &str) -> Option<Recency> {
         "file_changed" => Some(Recency::FileChanged),
         "unknown" => Some(Recency::Unknown),
         _ => None,
+    }
+}
+
+fn edge_target_span_id(edge: &damask_store::index::query::EdgeRow) -> Option<&str> {
+    edge.to_id
+        .as_deref()
+        .filter(|id| id.starts_with("s_"))
+        .or_else(|| {
+            edge.from_id
+                .as_deref()
+                .filter(|id| id.starts_with("s_"))
+        })
+}
+
+fn freshness_glyph(resolution: Option<&str>, recency: Option<&str>) -> &'static str {
+    match (resolution, recency) {
+        (Some("missing"), _) => glyphs::UNRESOLVED,
+        (Some("unresolved"), _) => glyphs::UNRESOLVED,
+        (Some("relocated"), _) => glyphs::RELOCATED,
+        (_, Some("file_changed")) => glyphs::FILE_CHANGED,
+        (Some("exact"), Some("unchanged")) => glyphs::EXACT_UNCHANGED,
+        _ => "",
     }
 }
 

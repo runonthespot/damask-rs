@@ -20,21 +20,23 @@ Key concepts:
 Typical workflow:
   damask init                          # set up .damask/ in your repo
   damask ns set security-audit         # create/activate a namespace
-  damask span src/auth.rs 42 67        # pin a code region
-  damask edge <span_id> _ risk '{...}' # attach a finding
+  damask record src/auth.rs 42 67 risk '{...}'  # pin + annotate in one shot
   damask at src/auth.rs:50             # what do we know about line 50?
   damask tui                           # browse everything interactively
+
+For bulk operations, use batch to create multiple facts atomically:
+  damask batch --stdin < facts.json    # spans + edges with $N back-references
 
 All output supports --format json for machine consumption."
 )]
 #[command(version, propagate_version = true)]
 pub struct Cli {
     /// Output format.
-    #[arg(long, value_enum, default_value_t = Format::Human)]
+    #[arg(long, global = true, value_enum, default_value_t = Format::Human)]
     pub format: Format,
 
     /// Override the active namespace.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub ns: Option<String>,
 
     #[command(subcommand)]
@@ -44,7 +46,14 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Initialize .damask/ in current directory.
-    Init,
+    Init {
+        /// Scaffold Claude Code integration (.claude/skills/damask/).
+        #[arg(long)]
+        claude: bool,
+        /// Scaffold OpenAI Codex CLI integration (AGENTS.md).
+        #[arg(long)]
+        codex: bool,
+    },
 
     /// Set or list namespaces.
     Ns {
@@ -91,6 +100,43 @@ pub enum Command {
         stdin: bool,
     },
 
+    /// Create a span and edge in one shot.
+    Record {
+        /// Root-relative file path.
+        file: String,
+
+        /// Start line (1-indexed).
+        start: u32,
+
+        /// End line (1-indexed, inclusive).
+        end: u32,
+
+        /// Relationship type (e.g., "risk", "depends_on").
+        rel: String,
+
+        /// JSON payload (inline).
+        payload: String,
+
+        /// Symbol anchor (function name, section heading).
+        #[arg(long)]
+        symbol: Option<String>,
+
+        /// Target span or edge ID (default: null).
+        #[arg(long, default_value = "_")]
+        to: String,
+    },
+
+    /// Create multiple facts atomically from a JSON batch (stdin or file).
+    Batch {
+        /// Read batch from stdin.
+        #[arg(long, conflicts_with = "file")]
+        stdin: bool,
+
+        /// Read batch from a JSON file.
+        #[arg(short = 'f', long = "file", conflicts_with = "stdin")]
+        file: Option<String>,
+    },
+
     /// What edges touch this location? (THE product)
     At {
         /// Location: file:line or file.
@@ -103,12 +149,25 @@ pub enum Command {
         /// Skip ranking, sort chronologically.
         #[arg(long)]
         no_rank: bool,
+
+        /// Filter by relationship type.
+        #[arg(long)]
+        rel: Option<String>,
+
+        /// Filter by exact tag match.
+        #[arg(long)]
+        tag: Option<String>,
+
+        /// Show only edges with 0 disputes (untriaged findings).
+        #[arg(long)]
+        undisputed: bool,
     },
 
-    /// Filter edges by properties.
+    /// Filter edges by properties (multiple predicates are AND-composed).
     Where {
-        /// Predicate: field=value, field>value, etc.
-        predicate: String,
+        /// Predicates: field=value, field>value, etc. Multiple predicates are AND-composed.
+        #[arg(required = true)]
+        predicates: Vec<String>,
 
         /// Only show edges created since this date (YYYY-MM-DD).
         #[arg(long)]
@@ -143,11 +202,34 @@ pub enum Command {
 
     /// Signal that your work contradicts this edge (payload required).
     Dispute {
-        /// Edge ID to dispute.
-        edge_id: String,
+        /// Edge ID to dispute (required unless --batch).
+        edge_id: Option<String>,
 
-        /// Dispute payload (required).
-        payload: String,
+        /// Dispute payload (required unless --reason).
+        payload: Option<String>,
+
+        /// Use a reason template instead of raw JSON payload.
+        #[arg(long, value_parser = ["mitigated", "stale", "false-positive", "duplicate"])]
+        reason: Option<String>,
+
+        /// Batch mode: read edge IDs from stdin, one per line.
+        #[arg(long)]
+        batch: bool,
+    },
+
+    /// One-shot orientation: status, risks, gotchas, decisions, recent activity.
+    Orient {
+        /// Filter by relationship type.
+        #[arg(long)]
+        rel: Option<String>,
+
+        /// Filter by exact tag match.
+        #[arg(long)]
+        tag: Option<String>,
+
+        /// Show only edges with 0 disputes (untriaged findings).
+        #[arg(long)]
+        undisputed: bool,
     },
 
     /// Damask health: counts, staleness, freshness.

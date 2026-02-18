@@ -13,10 +13,17 @@ pub mod ranking;
 pub mod state;
 
 pub use index::query::{NamespaceStats, NodeKind, ProjectStats, SpanRow, TraversalChild, TraversalNode};
-pub use index::{rebuild_index, update_index, IndexQuery};
+pub use index::{
+    rebuild_index,
+    rebuild_index_with_mode,
+    update_index,
+    update_index_with_mode,
+    IndexMode,
+    IndexQuery,
+};
 pub use jsonl::{FactReader, FactWriter};
 pub use lint::{lint_edges, token_overlap_ratio, LintInput, LintIssue, Severity};
-pub use predicate::Predicate;
+pub use predicate::{needs_inactive_edges, Predicate};
 pub use project::DamaskProject;
 pub use ranking::{rank_edges, RankedEdge, RankingInput};
 

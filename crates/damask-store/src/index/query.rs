@@ -41,6 +41,9 @@ const SPAN_COLS: &str = "id, path, line_start, line_end, snippet, symbol, conten
 /// Column list for edge SELECT queries.
 const EDGE_COLS: &str = "id, from_id, to_id, rel, payload, ns, ts, agent, is_active";
 
+/// Table-qualified edge columns for JOIN contexts (avoids ambiguity with FTS payload column).
+const EDGE_COLS_Q: &str = "edges.id, edges.from_id, edges.to_id, edges.rel, edges.payload, edges.ns, edges.ts, edges.agent, edges.is_active";
+
 /// Map a rusqlite row to a SpanRow (columns must match SPAN_COLS order).
 fn row_to_span(row: &Row<'_>) -> rusqlite::Result<SpanRow> {
     Ok(SpanRow {
@@ -239,15 +242,54 @@ impl<'a> IndexQuery<'a> {
         })
     }
 
-    /// Return all active content edges (for `where` predicate filtering).
+    /// Return all active content edges, optionally filtered by namespace.
     pub fn all_active_edges(&self) -> Result<Vec<EdgeRow>, StoreError> {
-        let sql = format!("SELECT {EDGE_COLS} FROM edges WHERE is_active = 1");
+        self.all_active_edges_ns(None)
+    }
+
+    /// Return all active content edges in the given namespace (or all if None).
+    pub fn all_active_edges_ns(&self, ns: Option<&str>) -> Result<Vec<EdgeRow>, StoreError> {
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match ns {
+            Some(ns) => (
+                format!("SELECT {EDGE_COLS} FROM edges WHERE is_active = 1 AND ns = ?1"),
+                vec![Box::new(ns.to_string())],
+            ),
+            None => (
+                format!("SELECT {EDGE_COLS} FROM edges WHERE is_active = 1"),
+                vec![],
+            ),
+        };
         let mut stmt = self
             .conn
             .prepare(&sql)
             .map_err(|e| StoreError::Io(e.to_string()))?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
-            .query([])
+            .query(params_refs.as_slice())
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        collect_rows(rows, row_to_edge)
+    }
+
+    /// Return all edges (active + inactive) in the given namespace (or all if None).
+    /// Used when predicates need to match inactive edges (e.g. lifecycle=superseded).
+    pub fn all_edges_ns(&self, ns: Option<&str>) -> Result<Vec<EdgeRow>, StoreError> {
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match ns {
+            Some(ns) => (
+                format!("SELECT {EDGE_COLS} FROM edges WHERE ns = ?1"),
+                vec![Box::new(ns.to_string())],
+            ),
+            None => (
+                format!("SELECT {EDGE_COLS} FROM edges"),
+                vec![],
+            ),
+        };
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query(params_refs.as_slice())
             .map_err(|e| StoreError::Io(e.to_string()))?;
         collect_rows(rows, row_to_edge)
     }
@@ -333,7 +375,7 @@ impl<'a> IndexQuery<'a> {
         rel: Option<&str>,
     ) -> Result<Vec<EdgeRow>, StoreError> {
         let mut sql = format!(
-            "SELECT {EDGE_COLS} FROM edges
+            "SELECT {EDGE_COLS_Q} FROM edges
              JOIN edges_fts ON edges.rowid = edges_fts.rowid
              WHERE edges_fts MATCH ?1 AND edges.is_active = 1"
         );
@@ -741,6 +783,65 @@ mod tests {
         let q = IndexQuery::new(&conn);
         assert_eq!(q.endorsement_count("e_1").unwrap(), 2);
         assert_eq!(q.dispute_count("e_1").unwrap(), 0);
+    }
+
+    fn insert_edge_ns(
+        conn: &Connection,
+        id: &str,
+        from: Option<&str>,
+        to: Option<&str>,
+        rel: &str,
+        ns: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO edges (id, from_id, to_id, rel, payload, ns, ts) VALUES (?1, ?2, ?3, ?4, '{}', ?5, '2025-01-01T00:00:00Z')",
+            rusqlite::params![id, from, to, rel, ns],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn all_active_edges_ns_filters_by_namespace() {
+        let conn = setup_db();
+        insert_edge_ns(&conn, "e_1", Some("s_1"), None, "risk", "alpha");
+        insert_edge_ns(&conn, "e_2", Some("s_1"), None, "describes", "alpha");
+        insert_edge_ns(&conn, "e_3", Some("s_2"), None, "risk", "beta");
+
+        let q = IndexQuery::new(&conn);
+
+        // Filter to alpha — should get 2
+        let alpha = q.all_active_edges_ns(Some("alpha")).unwrap();
+        assert_eq!(alpha.len(), 2);
+        assert!(alpha.iter().all(|e| e.ns == "alpha"));
+
+        // Filter to beta — should get 1
+        let beta = q.all_active_edges_ns(Some("beta")).unwrap();
+        assert_eq!(beta.len(), 1);
+        assert_eq!(beta[0].id, "e_3");
+
+        // No filter — should get all 3
+        let all = q.all_active_edges_ns(None).unwrap();
+        assert_eq!(all.len(), 3);
+
+        // Filter to nonexistent namespace — should get 0
+        let empty = q.all_active_edges_ns(Some("gamma")).unwrap();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn all_active_edges_ns_excludes_inactive() {
+        let conn = setup_db();
+        insert_edge_ns(&conn, "e_1", Some("s_1"), None, "risk", "alpha");
+        insert_edge_ns(&conn, "e_2", Some("s_1"), None, "risk", "alpha");
+
+        // Deactivate e_2
+        conn.execute("UPDATE edges SET is_active = 0 WHERE id = 'e_2'", [])
+            .unwrap();
+
+        let q = IndexQuery::new(&conn);
+        let edges = q.all_active_edges_ns(Some("alpha")).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].id, "e_1");
     }
 
     #[test]

@@ -11,7 +11,7 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init => commands::init::run(),
+        Command::Init { claude, codex } => commands::init::run(claude, codex),
 
         Command::Ns { action } => commands::ns::run(action, cli.format),
 
@@ -47,23 +47,66 @@ fn main() -> anyhow::Result<()> {
             cli.format,
         ),
 
+        Command::Record {
+            file,
+            start,
+            end,
+            rel,
+            payload,
+            symbol,
+            to,
+        } => commands::record::run(
+            &file,
+            start,
+            end,
+            &rel,
+            &payload,
+            symbol.as_deref(),
+            &to,
+            cli.ns.as_deref(),
+            cli.format,
+        ),
+
+        Command::Batch { stdin, file } => {
+            commands::batch::run(stdin, file.as_deref(), cli.ns.as_deref(), cli.format)
+        }
+
         Command::At {
             location,
             all,
             no_rank,
-        } => commands::at::run(&location, cli.format, all, no_rank),
+            rel,
+            tag,
+            undisputed,
+        } => commands::at::run(&location, cli.format, all, no_rank, rel.as_deref(), tag.as_deref(), undisputed),
         Command::Where {
-            predicate,
+            predicates,
             since,
             limit,
-        } => commands::where_cmd::run(&predicate, since.as_deref(), limit, cli.format),
+        } => commands::where_cmd::run(&predicates, since.as_deref(), limit, cli.format, cli.ns.as_deref()),
         Command::Follow { id, rel, depth } => {
             commands::follow::run(&id, rel.as_deref(), depth, cli.format)
         }
         Command::Endorse { edge_id, payload } => {
-            commands::endorse::run(&edge_id, payload.as_deref())
+            commands::endorse::run(&edge_id, payload.as_deref(), cli.ns.as_deref())
         }
-        Command::Dispute { edge_id, payload } => commands::dispute::run(&edge_id, &payload),
+        Command::Dispute {
+            edge_id,
+            payload,
+            reason,
+            batch,
+        } => commands::dispute::run(
+            edge_id.as_deref(),
+            payload.as_deref(),
+            reason.as_deref(),
+            batch,
+            cli.ns.as_deref(),
+        ),
+        Command::Orient {
+            rel,
+            tag,
+            undisputed,
+        } => commands::orient::run(cli.format, rel.as_deref(), tag.as_deref(), undisputed),
         Command::Status => commands::status::run(cli.format),
         Command::Lint => commands::lint::run(cli.format),
         Command::Compact {

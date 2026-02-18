@@ -1,14 +1,16 @@
 use anyhow::Context;
 use damask_core::PayloadEnvelope;
-use damask_store::{update_index, DamaskProject, IndexQuery, Predicate};
+use damask_store::{needs_inactive_edges, update_index_with_mode, DamaskProject, IndexMode, IndexQuery, Predicate};
 use std::env;
 
 use crate::error::Result;
 use crate::output::Format;
 
-pub fn run(predicate_str: &str, since: Option<&str>, limit: usize, format: Format) -> Result<()> {
-    let pred =
-        Predicate::parse(predicate_str).map_err(|e| anyhow::anyhow!("invalid predicate: {e}"))?;
+pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, format: Format, ns: Option<&str>) -> Result<()> {
+    let preds: Vec<Predicate> = predicate_strs
+        .iter()
+        .map(|s| Predicate::parse(s).map_err(|e| anyhow::anyhow!("{e}")))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
 
     let cwd = env::current_dir().context("failed to get current directory")?;
     let project = DamaskProject::discover(&cwd)
@@ -17,10 +19,17 @@ pub fn run(predicate_str: &str, since: Option<&str>, limit: usize, format: Forma
 
     let db_path = project.damask_dir.join("index.db");
     let edges_dir = project.damask_dir.join("edges");
-    let conn = update_index(&db_path, &edges_dir).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let conn = update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let q = IndexQuery::new(&conn);
-    let all_edges = q.all_active_edges().map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    // Use all_edges_ns (includes inactive) when predicates need superseded edges
+    let all_edges = if needs_inactive_edges(&preds) {
+        q.all_edges_ns(ns).map_err(|e| anyhow::anyhow!("{}", e))?
+    } else {
+        q.all_active_edges_ns(ns).map_err(|e| anyhow::anyhow!("{}", e))?
+    };
 
     let mut matched = Vec::new();
     for edge in &all_edges {
@@ -39,7 +48,8 @@ pub fn run(predicate_str: &str, since: Option<&str>, limit: usize, format: Forma
             .dispute_count(&edge.id)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        if pred.matches(edge, endorsement_count, dispute_count) {
+        // AND-compose: all predicates must match
+        if preds.iter().all(|p| p.matches(edge, endorsement_count, dispute_count)) {
             matched.push((edge, endorsement_count, dispute_count));
         }
     }
@@ -47,8 +57,10 @@ pub fn run(predicate_str: &str, since: Option<&str>, limit: usize, format: Forma
     // Apply limit
     matched.truncate(limit);
 
+    let predicate_display = predicate_strs.join(" AND ");
+
     match format {
-        Format::Human => print_human(&matched, predicate_str),
+        Format::Human => print_human(&matched, &predicate_display),
         Format::Json => print_json(&matched),
     }
 

@@ -3,10 +3,13 @@ use damask_core::PayloadEnvelope;
 use crate::index::query::EdgeRow;
 use crate::StoreError;
 
+/// Valid field names for predicates.
+const KNOWN_FIELDS: &[&str] = &[
+    "rel", "ns", "agent", "endorsed", "disputed", "confidence", "status", "summary", "tags",
+    "lifecycle",
+];
+
 /// A simple predicate: `field op value`.
-///
-/// Phase 1 supports single predicates only (no AND/OR).
-/// Compose via shell pipes: `damask where rel=risk --format json | ...`
 #[derive(Debug, Clone)]
 pub struct Predicate {
     pub field: String,
@@ -22,11 +25,12 @@ pub enum CompareOp {
     Lt,
     Gte,
     Lte,
+    Contains,
 }
 
 impl Predicate {
-    /// Parse a predicate string like `rel=risk` or `confidence>0.8`.
-    pub fn parse(s: &str) -> Result<Self, StoreError> {
+    /// Parse a raw predicate string into (field, op, value) without field validation.
+    fn parse_raw(s: &str) -> Result<(String, CompareOp, String), StoreError> {
         // Try two-char ops first (order matters: != before =, >= before >, <= before <)
         for (pat, op) in &[
             ("!=", CompareOp::Ne),
@@ -39,15 +43,12 @@ impl Predicate {
                 if field.is_empty() {
                     return Err(StoreError::Io(format!("empty field in predicate: {s}")));
                 }
-                return Ok(Predicate {
-                    field,
-                    op: *op,
-                    value,
-                });
+                return Ok((field, *op, value));
             }
         }
-        // Then single-char ops
+        // Then single-char ops (~ before = so tags~sec isn't parsed as tags with ~sec value)
         for (pat, op) in &[
+            ("~", CompareOp::Contains),
             ("=", CompareOp::Eq),
             (">", CompareOp::Gt),
             ("<", CompareOp::Lt),
@@ -58,16 +59,28 @@ impl Predicate {
                 if field.is_empty() {
                     return Err(StoreError::Io(format!("empty field in predicate: {s}")));
                 }
-                return Ok(Predicate {
-                    field,
-                    op: *op,
-                    value,
-                });
+                return Ok((field, *op, value));
             }
         }
         Err(StoreError::Io(format!(
-            "invalid predicate (expected field=value, field>value, etc.): {s}"
+            "invalid predicate (expected field=value, field>value, field~substring, etc.): {s}"
         )))
+    }
+
+    /// Parse a predicate string like `rel=risk` or `confidence>0.8`.
+    /// Returns an error listing valid fields if the field name is unknown.
+    pub fn parse(s: &str) -> Result<Self, StoreError> {
+        let (field, op, value) = Self::parse_raw(s)?;
+
+        if !KNOWN_FIELDS.contains(&field.as_str()) {
+            return Err(StoreError::Io(format!(
+                "unknown field '{}' in predicate. Valid fields: {}. Examples: rel=risk, confidence>0.8, tags~security",
+                field,
+                KNOWN_FIELDS.join(", "),
+            )));
+        }
+
+        Ok(Predicate { field, op, value })
     }
 
     /// Check if an edge matches this predicate.
@@ -83,6 +96,7 @@ impl Predicate {
                 if let Ok(val) = self.value.parse::<f64>() {
                     self.compare_num(endorsement_count as f64, val)
                 } else {
+                    eprintln!("warning: cannot parse '{}' as a number for field 'endorsed'", self.value);
                     false
                 }
             }
@@ -99,6 +113,7 @@ impl Predicate {
                 } else if let Ok(val) = self.value.parse::<f64>() {
                     self.compare_num(dispute_count as f64, val)
                 } else {
+                    eprintln!("warning: cannot parse '{}' as a number for field 'disputed'", self.value);
                     false
                 }
             }
@@ -107,8 +122,13 @@ impl Predicate {
                 let payload: serde_json::Value =
                     serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
                 let env = PayloadEnvelope::new(&payload);
-                if let (Some(conf), Ok(val)) = (env.confidence(), self.value.parse::<f64>()) {
-                    self.compare_num(conf, val)
+                if let Some(conf) = env.confidence() {
+                    if let Ok(val) = self.value.parse::<f64>() {
+                        self.compare_num(conf, val)
+                    } else {
+                        eprintln!("warning: cannot parse '{}' as a number for field 'confidence'", self.value);
+                        false
+                    }
                 } else {
                     false
                 }
@@ -135,8 +155,22 @@ impl Predicate {
                 match self.op {
                     CompareOp::Eq => tags.iter().any(|t| *t == self.value),
                     CompareOp::Ne => !tags.iter().any(|t| *t == self.value),
+                    CompareOp::Contains => tags.iter().any(|t| t.contains(self.value.as_str())),
                     _ => false,
                 }
+            }
+            "lifecycle" => {
+                // Computed virtual field based on active state and meta-edge counts
+                let lifecycle = if !edge.is_active {
+                    "superseded"
+                } else if dispute_count > 0 {
+                    "disputed"
+                } else if endorsement_count > 0 {
+                    "endorsed"
+                } else {
+                    "untriaged"
+                };
+                self.compare_str(lifecycle)
             }
             _ => false,
         }
@@ -150,6 +184,7 @@ impl Predicate {
             CompareOp::Lt => actual < self.value.as_str(),
             CompareOp::Gte => actual >= self.value.as_str(),
             CompareOp::Lte => actual <= self.value.as_str(),
+            CompareOp::Contains => actual.contains(self.value.as_str()),
         }
     }
 
@@ -161,8 +196,14 @@ impl Predicate {
             CompareOp::Lt => actual < expected,
             CompareOp::Gte => actual >= expected,
             CompareOp::Lte => actual <= expected,
+            CompareOp::Contains => false,
         }
     }
+}
+
+/// Check if any predicate in the slice requires inactive edges (e.g. lifecycle=superseded).
+pub fn needs_inactive_edges(preds: &[Predicate]) -> bool {
+    preds.iter().any(|p| p.field == "lifecycle" && p.value == "superseded")
 }
 
 #[cfg(test)]
@@ -321,5 +362,163 @@ mod tests {
 
         let p_ne = Predicate::parse("tags=unrelated").unwrap();
         assert!(!p_ne.matches(&edge, 0, 0));
+    }
+
+    #[test]
+    fn parse_contains() {
+        let p = Predicate::parse("tags~sec").unwrap();
+        assert_eq!(p.field, "tags");
+        assert_eq!(p.op, CompareOp::Contains);
+        assert_eq!(p.value, "sec");
+    }
+
+    #[test]
+    fn matches_tags_contains() {
+        let p = Predicate::parse("tags~sec").unwrap();
+        let edge = EdgeRow {
+            id: "e_1".into(),
+            from_id: None,
+            to_id: None,
+            rel: "risk".into(),
+            payload: r#"{"tags":["security","auth"]}"#.into(),
+            ns: "test".into(),
+            ts: "2025-01-01T00:00:00Z".into(),
+            agent: None,
+            is_active: true,
+        };
+        assert!(p.matches(&edge, 0, 0));
+
+        let p_miss = Predicate::parse("tags~network").unwrap();
+        assert!(!p_miss.matches(&edge, 0, 0));
+    }
+
+    #[test]
+    fn matches_summary_contains() {
+        let p = Predicate::parse("summary~expiry").unwrap();
+        let edge = EdgeRow {
+            id: "e_1".into(),
+            from_id: None,
+            to_id: None,
+            rel: "risk".into(),
+            payload: r#"{"summary":"No token expiry check"}"#.into(),
+            ns: "test".into(),
+            ts: "2025-01-01T00:00:00Z".into(),
+            agent: None,
+            is_active: true,
+        };
+        assert!(p.matches(&edge, 0, 0));
+
+        let p_miss = Predicate::parse("summary~authentication").unwrap();
+        assert!(!p_miss.matches(&edge, 0, 0));
+    }
+
+    #[test]
+    fn parse_unknown_field_returns_error() {
+        let err = Predicate::parse("bogus=value").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown field 'bogus'"), "got: {msg}");
+        assert!(msg.contains("rel"), "should list valid fields, got: {msg}");
+        assert!(msg.contains("Examples:") || msg.contains("rel=risk"), "should have examples, got: {msg}");
+    }
+
+    #[test]
+    fn parse_known_fields_succeed() {
+        for field in super::KNOWN_FIELDS {
+            let input = format!("{field}=test");
+            assert!(Predicate::parse(&input).is_ok(), "field '{field}' should parse");
+        }
+    }
+
+    #[test]
+    fn matches_lifecycle_untriaged() {
+        let p = Predicate::parse("lifecycle=untriaged").unwrap();
+        let edge = EdgeRow {
+            id: "e_1".into(),
+            from_id: None,
+            to_id: None,
+            rel: "risk".into(),
+            payload: "{}".into(),
+            ns: "test".into(),
+            ts: "2025-01-01T00:00:00Z".into(),
+            agent: None,
+            is_active: true,
+        };
+        // Active, 0 endorsements, 0 disputes => untriaged
+        assert!(p.matches(&edge, 0, 0));
+        // With endorsements => not untriaged
+        assert!(!p.matches(&edge, 1, 0));
+    }
+
+    #[test]
+    fn matches_lifecycle_endorsed() {
+        let p = Predicate::parse("lifecycle=endorsed").unwrap();
+        let edge = EdgeRow {
+            id: "e_1".into(),
+            from_id: None,
+            to_id: None,
+            rel: "risk".into(),
+            payload: "{}".into(),
+            ns: "test".into(),
+            ts: "2025-01-01T00:00:00Z".into(),
+            agent: None,
+            is_active: true,
+        };
+        assert!(p.matches(&edge, 2, 0));
+        assert!(!p.matches(&edge, 0, 0));
+    }
+
+    #[test]
+    fn matches_lifecycle_disputed() {
+        let p = Predicate::parse("lifecycle=disputed").unwrap();
+        let edge = EdgeRow {
+            id: "e_1".into(),
+            from_id: None,
+            to_id: None,
+            rel: "risk".into(),
+            payload: "{}".into(),
+            ns: "test".into(),
+            ts: "2025-01-01T00:00:00Z".into(),
+            agent: None,
+            is_active: true,
+        };
+        assert!(p.matches(&edge, 0, 1));
+        assert!(!p.matches(&edge, 0, 0));
+    }
+
+    #[test]
+    fn matches_lifecycle_superseded() {
+        let p = Predicate::parse("lifecycle=superseded").unwrap();
+        let active_edge = EdgeRow {
+            id: "e_1".into(),
+            from_id: None,
+            to_id: None,
+            rel: "risk".into(),
+            payload: "{}".into(),
+            ns: "test".into(),
+            ts: "2025-01-01T00:00:00Z".into(),
+            agent: None,
+            is_active: true,
+        };
+        let inactive_edge = EdgeRow {
+            is_active: false,
+            ..active_edge.clone()
+        };
+        assert!(!p.matches(&active_edge, 0, 0));
+        assert!(p.matches(&inactive_edge, 0, 0));
+    }
+
+    #[test]
+    fn needs_inactive_edges_helper() {
+        let preds = vec![Predicate::parse("rel=risk").unwrap()];
+        assert!(!super::needs_inactive_edges(&preds));
+
+        let preds = vec![Predicate::parse("lifecycle=superseded").unwrap()];
+        assert!(super::needs_inactive_edges(&preds));
+
+        let preds = vec![
+            Predicate::parse("rel=risk").unwrap(),
+            Predicate::parse("lifecycle=untriaged").unwrap(),
+        ];
+        assert!(!super::needs_inactive_edges(&preds));
     }
 }
