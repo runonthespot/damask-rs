@@ -90,7 +90,19 @@ pub fn run(namespace: Option<&str>, aggressive: bool) -> Result<()> {
             let should_remove = match fact {
                 Fact::Edge(edge) => {
                     let id = edge.id.to_string();
-                    inactive_ids.contains(&id) || aggressive_ids.contains(&id)
+
+                    // Preserve endorsement/dispute signals for active edges
+                    if edge.rel == "endorsed" || edge.rel == "disputed" {
+                        let target_id = edge.from.as_ref().map(|t| t.to_string());
+                        match target_id {
+                            Some(tid) => {
+                                inactive_ids.contains(&tid) || aggressive_ids.contains(&tid)
+                            }
+                            None => true, // malformed meta-edge; drop from view
+                        }
+                    } else {
+                        inactive_ids.contains(&id) || aggressive_ids.contains(&id)
+                    }
                 }
                 Fact::Span(_) => false, // never remove spans
             };

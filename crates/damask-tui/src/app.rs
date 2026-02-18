@@ -1,6 +1,6 @@
 use damask_core::PayloadEnvelope;
 use damask_store::index::query::{EdgeRow, SpanRow};
-use damask_store::{update_index, DamaskProject, IndexQuery, ProjectStats};
+use damask_store::{update_index_with_mode, DamaskProject, IndexMode, IndexQuery, ProjectStats};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -179,7 +179,9 @@ impl App {
             DamaskProject::discover(&self.project_root).map_err(|e| anyhow::anyhow!("{}", e))?;
         let db_path = project.damask_dir.join("index.db");
         let edges_dir = project.damask_dir.join("edges");
-        let conn = update_index(&db_path, &edges_dir).map_err(|e| anyhow::anyhow!("{}", e))?;
+        let conn =
+            update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
         let fresh = App::load(&project, &conn)?;
 
         self.stats = fresh.stats;
@@ -275,7 +277,7 @@ impl App {
         };
         let db_path = project.damask_dir.join("index.db");
         let edges_dir = project.damask_dir.join("edges");
-        let conn = match update_index(&db_path, &edges_dir) {
+        let conn = match update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred) {
             Ok(c) => c,
             Err(_) => return,
         };
@@ -311,7 +313,7 @@ impl App {
         };
         let db_path = project.damask_dir.join("index.db");
         let edges_dir = project.damask_dir.join("edges");
-        let conn = match update_index(&db_path, &edges_dir) {
+        let conn = match update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred) {
             Ok(c) => c,
             Err(_) => {
                 self.active_view = ActiveView::EdgeDetail;

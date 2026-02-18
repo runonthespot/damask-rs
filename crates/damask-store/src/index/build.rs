@@ -11,8 +11,26 @@ use crate::jsonl::FactReader;
 use crate::state::compute_active_state;
 use crate::StoreError;
 
+/// Controls which JSONL sources the index should read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexMode {
+    /// Read raw append-only logs only (ignore `.views/`).
+    FullLog,
+    /// Prefer `.views/<ns>.current.jsonl` when present, falling back to raw logs.
+    ViewsPreferred,
+}
+
 /// Rebuild the entire SQLite index from JSONL files.
 pub fn rebuild_index(db_path: &Path, edges_dir: &Path) -> Result<Connection, StoreError> {
+    rebuild_index_with_mode(db_path, edges_dir, IndexMode::FullLog)
+}
+
+/// Rebuild the entire SQLite index from JSONL files using the given mode.
+pub fn rebuild_index_with_mode(
+    db_path: &Path,
+    edges_dir: &Path,
+    mode: IndexMode,
+) -> Result<Connection, StoreError> {
     // Remove existing DB if present
     if db_path.exists() {
         std::fs::remove_file(db_path).map_err(|e| StoreError::Io(e.to_string()))?;
@@ -28,7 +46,7 @@ pub fn rebuild_index(db_path: &Path, edges_dir: &Path) -> Result<Connection, Sto
         .unwrap_or(edges_dir);
 
     // Read all facts from all JSONL files
-    let jsonl_files = list_jsonl_files(edges_dir);
+    let jsonl_files = list_jsonl_files(edges_dir, mode);
     let all_facts = read_facts_from_files(&jsonl_files)?;
     insert_facts(&conn, &all_facts, project_root)?;
 
@@ -44,8 +62,18 @@ pub fn rebuild_index(db_path: &Path, edges_dir: &Path) -> Result<Connection, Sto
 /// Incrementally update the index — only re-read JSONL files that changed.
 /// Falls back to full rebuild if the DB doesn't exist or schema is missing.
 pub fn update_index(db_path: &Path, edges_dir: &Path) -> Result<Connection, StoreError> {
+    update_index_with_mode(db_path, edges_dir, IndexMode::FullLog)
+}
+
+/// Incrementally update the index — only re-read JSONL files that changed.
+/// Falls back to full rebuild if the DB doesn't exist or schema is missing.
+pub fn update_index_with_mode(
+    db_path: &Path,
+    edges_dir: &Path,
+    mode: IndexMode,
+) -> Result<Connection, StoreError> {
     if !db_path.exists() {
-        return rebuild_index(db_path, edges_dir);
+        return rebuild_index_with_mode(db_path, edges_dir, mode);
     }
 
     let conn = Connection::open(db_path).map_err(|e| StoreError::Io(e.to_string()))?;
@@ -54,10 +82,10 @@ pub fn update_index(db_path: &Path, edges_dir: &Path) -> Result<Connection, Stor
     // Check for index_meta table AND source_file column on spans (added in current schema).
     if !schema_is_current(&conn) {
         drop(conn);
-        return rebuild_index(db_path, edges_dir);
+        return rebuild_index_with_mode(db_path, edges_dir, mode);
     }
 
-    let jsonl_files = list_jsonl_files(edges_dir);
+    let jsonl_files = list_jsonl_files(edges_dir, mode);
     let changed_files = find_changed_files(&conn, &jsonl_files)?;
 
     // Detect deleted JSONL files before the early-return: mtime entries whose
@@ -99,13 +127,13 @@ pub fn update_index(db_path: &Path, edges_dir: &Path) -> Result<Connection, Stor
     Ok(conn)
 }
 
-/// List all JSONL files in the edges directory, skipping .views and .private.
-fn list_jsonl_files(edges_dir: &Path) -> Vec<std::path::PathBuf> {
+/// List JSONL files in the edges directory based on index mode.
+fn list_jsonl_files(edges_dir: &Path, mode: IndexMode) -> Vec<std::path::PathBuf> {
     if !edges_dir.exists() {
         return Vec::new();
     }
 
-    WalkDir::new(edges_dir)
+    let entries = WalkDir::new(edges_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| {
@@ -114,14 +142,84 @@ fn list_jsonl_files(edges_dir: &Path) -> Vec<std::path::PathBuf> {
         .filter(|e| {
             !e.path()
                 .components()
-                .any(|c| {
-                    c.as_os_str() == ".views"
-                        || c.as_os_str() == ".private"
-                        || c.as_os_str() == ".local"
-                })
-        })
-        .map(|e| e.into_path())
-        .collect()
+                .any(|c| c.as_os_str() == ".private" || c.as_os_str() == ".local")
+        });
+
+    match mode {
+        IndexMode::FullLog => entries
+            .filter(|e| {
+                !e.path()
+                    .components()
+                    .any(|c| c.as_os_str() == ".views")
+            })
+            .map(|e| e.into_path())
+            .collect(),
+        IndexMode::ViewsPreferred => {
+            let mut views_by_ns: std::collections::HashMap<String, PathBuf> =
+                std::collections::HashMap::new();
+            let mut raw_by_ns: std::collections::HashMap<String, PathBuf> =
+                std::collections::HashMap::new();
+
+            for entry in entries {
+                let path = entry.path();
+                let is_view = path
+                    .components()
+                    .any(|c| c.as_os_str() == ".views");
+
+                if is_view {
+                    if let Some(ns) = view_namespace(path) {
+                        views_by_ns.insert(ns, path.to_path_buf());
+                    }
+                    continue;
+                }
+
+                if let Some(ns) = raw_namespace(path) {
+                    raw_by_ns.insert(ns, path.to_path_buf());
+                }
+            }
+
+            let mut files = Vec::new();
+            for path in views_by_ns.values() {
+                files.push(path.clone());
+            }
+            for (ns, path) in raw_by_ns {
+                if !views_by_ns.contains_key(&ns) {
+                    files.push(path);
+                }
+            }
+
+            files.sort_by(|a, b| a.display().to_string().cmp(&b.display().to_string()));
+            files
+        }
+    }
+}
+
+/// Namespace for a view file `.views/<ns>.current.jsonl`.
+fn view_namespace(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy();
+    if !name.ends_with(".current.jsonl") {
+        return None;
+    }
+    let ns = name.trim_end_matches(".current.jsonl");
+    if ns.is_empty() {
+        None
+    } else {
+        Some(ns.to_string())
+    }
+}
+
+/// Namespace for a raw log file `<ns>.jsonl`.
+fn raw_namespace(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy();
+    if !name.ends_with(".jsonl") {
+        return None;
+    }
+    let ns = name.trim_end_matches(".jsonl");
+    if ns.is_empty() {
+        None
+    } else {
+        Some(ns.to_string())
+    }
 }
 
 /// Find which JSONL files have changed since the last index build.
@@ -354,7 +452,7 @@ fn insert_facts(
                     commit: s.commit.clone(),
                 };
 
-                let (resolution_str, recency_str, effective_line_start, effective_line_end) =
+                let (resolution_str, recency_str, effective_line_start, effective_line_end, effective_path) =
                     match resolve_span(project_root, &anchor) {
                         Ok(result) => {
                             let res = match result.freshness.resolution {
@@ -375,20 +473,23 @@ fn insert_facts(
                                 }
                                 None => (s.lines.map(|l| l[0]), s.lines.map(|l| l[1])),
                             };
-                            (Some(res.to_string()), Some(rec.to_string()), ls, le)
+                            // Use renamed path if the file was git-renamed
+                            let path = result.new_path.unwrap_or_else(|| s.path.clone());
+                            (Some(res.to_string()), Some(rec.to_string()), ls, le, path)
                         }
                         Err(_) => (
                             None,
                             None,
                             s.lines.map(|l| l[0]),
                             s.lines.map(|l| l[1]),
+                            s.path.clone(),
                         ),
                     };
 
                 span_stmt
                     .execute(rusqlite::params![
                         s.id.as_str(),
-                        s.path,
+                        effective_path,
                         effective_line_start,
                         effective_line_end,
                         s.snippet,

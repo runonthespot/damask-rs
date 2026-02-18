@@ -1,7 +1,7 @@
 use anyhow::Context;
 use damask_core::PayloadEnvelope;
 use damask_store::index::query::TraversalChild;
-use damask_store::{update_index, DamaskProject, IndexQuery, TraversalNode};
+use damask_store::{update_index_with_mode, DamaskProject, IndexMode, IndexQuery, TraversalNode};
 use std::env;
 
 use crate::error::Result;
@@ -19,7 +19,8 @@ pub fn run(id: &str, rel: Option<&str>, depth: u32, format: Format) -> Result<()
 
     let db_path = project.damask_dir.join("index.db");
     let edges_dir = project.damask_dir.join("edges");
-    let conn = update_index(&db_path, &edges_dir).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let conn = update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let q = IndexQuery::new(&conn);
     let tree = q

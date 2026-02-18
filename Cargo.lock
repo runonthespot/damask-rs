@@ -319,6 +319,7 @@ dependencies = [
  "git2",
  "owo-colors",
  "predicates",
+ "serde",
  "serde_json",
  "tempfile",
 ]

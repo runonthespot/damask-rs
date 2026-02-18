@@ -1,6 +1,6 @@
 use anyhow::Context;
 use damask_core::PayloadEnvelope;
-use damask_store::{update_index, DamaskProject, IndexQuery};
+use damask_store::{update_index_with_mode, DamaskProject, IndexMode, IndexQuery};
 use std::collections::HashSet;
 use std::env;
 
@@ -15,7 +15,8 @@ pub fn run(ns_a: &str, ns_b: &str, format: Format) -> Result<()> {
 
     let db_path = project.damask_dir.join("index.db");
     let edges_dir = project.damask_dir.join("edges");
-    let conn = update_index(&db_path, &edges_dir).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let conn = update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let q = IndexQuery::new(&conn);
     let all_edges = q.all_active_edges().map_err(|e| anyhow::anyhow!("{}", e))?;

@@ -44,11 +44,13 @@ pub struct SpanAnchor {
     pub commit: Option<String>,
 }
 
-/// Result of resolution with optional relocated line info.
+/// Result of resolution with optional relocated line/path info.
 pub struct ResolveResult {
     pub freshness: Freshness,
     /// If relocated, the new line range.
     pub new_lines: Option<(u32, u32)>,
+    /// If the file was renamed (git-tracked), the new root-relative path.
+    pub new_path: Option<String>,
 }
 
 /// Resolve a span against the current file system state.
@@ -63,11 +65,21 @@ pub struct ResolveResult {
 pub fn resolve_span(project_root: &Path, anchor: &SpanAnchor) -> Result<ResolveResult, ResolveError> {
     let file_path = project_root.join(&anchor.path);
 
-    // Step 1: Check file exists
+    // Step 1: Check file exists — if not, try git rename detection before giving up
     if !file_path.exists() {
+        if let Some(new_rel_path) = detect_rename(project_root, &anchor.path, anchor.commit.as_deref()) {
+            let new_file_path = project_root.join(&new_rel_path);
+            if new_file_path.exists() {
+                // File was renamed — continue cascade against the new path
+                let file_lines = read_file_lines(&new_file_path)?;
+                return resolve_renamed(project_root, anchor, &new_rel_path, &file_lines);
+            }
+        }
+
         return Ok(ResolveResult {
             freshness: Freshness::new(Resolution::Missing, Recency::Unknown),
             new_lines: None,
+            new_path: None,
         });
     }
 
@@ -84,6 +96,7 @@ pub fn resolve_span(project_root: &Path, anchor: &SpanAnchor) -> Result<ResolveR
                 return Ok(ResolveResult {
                     freshness: Freshness::new(Resolution::Exact, recency),
                     new_lines: None,
+                    new_path: None,
                 });
             }
         }
@@ -94,6 +107,7 @@ pub fn resolve_span(project_root: &Path, anchor: &SpanAnchor) -> Result<ResolveR
             return Ok(ResolveResult {
                 freshness: Freshness::new(Resolution::Relocated, recency),
                 new_lines: Some((new_start, new_end)),
+                new_path: None,
             });
         }
     }
@@ -105,6 +119,7 @@ pub fn resolve_span(project_root: &Path, anchor: &SpanAnchor) -> Result<ResolveR
             return Ok(ResolveResult {
                 freshness: Freshness::new(Resolution::Relocated, recency),
                 new_lines: Some((new_start, new_end)),
+                new_path: None,
             });
         }
     }
@@ -116,7 +131,21 @@ pub fn resolve_span(project_root: &Path, anchor: &SpanAnchor) -> Result<ResolveR
             return Ok(ResolveResult {
                 freshness: Freshness::new(Resolution::Relocated, recency),
                 new_lines: Some((new_start, new_end)),
+                new_path: None,
             });
+        }
+    }
+
+    // Step 5b: If content can't be found in-place, try git rename detection.
+    if let Some(new_rel_path) =
+        detect_rename(project_root, &anchor.path, anchor.commit.as_deref())
+    {
+        if new_rel_path != anchor.path {
+            let new_file_path = project_root.join(&new_rel_path);
+            if new_file_path.exists() {
+                let file_lines = read_file_lines(&new_file_path)?;
+                return resolve_renamed(project_root, anchor, &new_rel_path, &file_lines);
+            }
         }
     }
 
@@ -125,7 +154,119 @@ pub fn resolve_span(project_root: &Path, anchor: &SpanAnchor) -> Result<ResolveR
     Ok(ResolveResult {
         freshness: Freshness::new(Resolution::Unresolved, recency),
         new_lines: None,
+        new_path: None,
     })
+}
+
+/// Resolve a span whose file was renamed. Runs the hash/symbol/snippet cascade
+/// against the new file, returning Relocated with `new_path` set.
+fn resolve_renamed(
+    project_root: &Path,
+    anchor: &SpanAnchor,
+    new_rel_path: &str,
+    file_lines: &[String],
+) -> Result<ResolveResult, ResolveError> {
+    let recency = compute_recency_with_commit_path(
+        project_root,
+        new_rel_path,
+        &anchor.path,
+        anchor.commit.as_deref(),
+    );
+
+    // Try content hash at original lines
+    if let (Some(start), Some(end), Some(ref stored_hash)) =
+        (anchor.line_start, anchor.line_end, &anchor.content_hash)
+    {
+        if let Some(extracted) = extract_lines(file_lines, start, end) {
+            let current_hash = content_hash(&extracted);
+            if current_hash == *stored_hash {
+                return Ok(ResolveResult {
+                    freshness: Freshness::new(Resolution::Relocated, recency),
+                    new_lines: None,
+                    new_path: Some(new_rel_path.to_string()),
+                });
+            }
+        }
+
+        // Search entire renamed file for hash match
+        if let Some((new_start, new_end)) =
+            search_file_for_hash(file_lines, stored_hash, end - start + 1)
+        {
+            return Ok(ResolveResult {
+                freshness: Freshness::new(Resolution::Relocated, recency),
+                new_lines: Some((new_start, new_end)),
+                new_path: Some(new_rel_path.to_string()),
+            });
+        }
+    }
+
+    // Symbol fallback
+    if let Some(ref symbol) = anchor.symbol {
+        if let Some((new_start, new_end)) = search_file_for_symbol(file_lines, symbol) {
+            return Ok(ResolveResult {
+                freshness: Freshness::new(Resolution::Relocated, recency),
+                new_lines: Some((new_start, new_end)),
+                new_path: Some(new_rel_path.to_string()),
+            });
+        }
+    }
+
+    // Snippet fallback
+    if let Some(ref snippet) = anchor.snippet {
+        if let Some((new_start, new_end)) = search_file_for_snippet(file_lines, snippet) {
+            return Ok(ResolveResult {
+                freshness: Freshness::new(Resolution::Relocated, recency),
+                new_lines: Some((new_start, new_end)),
+                new_path: Some(new_rel_path.to_string()),
+            });
+        }
+    }
+
+    // Renamed file found but can't locate the span within it
+    Ok(ResolveResult {
+        freshness: Freshness::new(Resolution::Unresolved, recency),
+        new_lines: None,
+        new_path: Some(new_rel_path.to_string()),
+    })
+}
+
+/// Detect if a file was renamed between a commit and HEAD using git2 diff
+/// with rename detection. Returns the new root-relative path if found.
+fn detect_rename(project_root: &Path, old_path: &str, commit_sha: Option<&str>) -> Option<String> {
+    let sha = commit_sha?;
+    let repo = git2::Repository::discover(project_root).ok()?;
+
+    let old_oid = git2::Oid::from_str(sha).ok()?;
+    let old_commit = repo.find_commit(old_oid).ok()?;
+    let old_tree = old_commit.tree().ok()?;
+
+    let head = repo.head().ok()?;
+    let head_tree = head.peel_to_tree().ok()?;
+
+    let mut diff = repo
+        .diff_tree_to_tree(Some(&old_tree), Some(&head_tree), None)
+        .ok()?;
+
+    // Enable rename detection
+    let mut find_opts = git2::DiffFindOptions::new();
+    find_opts.renames(true);
+    diff.find_similar(Some(&mut find_opts)).ok()?;
+
+    // Look for renames involving our file
+    for delta in diff.deltas() {
+        if delta.status() == git2::Delta::Renamed {
+            if let Some(old) = delta.old_file().path() {
+                if old == Path::new(old_path) {
+                    return delta
+                        .new_file()
+                        .path()
+                        .map(|p| p.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Read all lines of a file into a Vec.
@@ -263,9 +404,21 @@ fn search_file_for_snippet(lines: &[String], snippet: &str) -> Option<(u32, u32)
 /// Checks both committed changes (HEAD vs span commit) and uncommitted working
 /// tree changes (disk content vs HEAD blob).
 fn compute_recency(project_root: &Path, file_path: &str, commit_sha: Option<&str>) -> Recency {
+    compute_recency_with_commit_path(project_root, file_path, file_path, commit_sha)
+}
+
+/// Compute recency by comparing disk content at `disk_path` against the blob
+/// at `commit_path` in the given commit. This supports git renames where the
+/// current path differs from the commit path.
+fn compute_recency_with_commit_path(
+    project_root: &Path,
+    disk_path: &str,
+    commit_path: &str,
+    commit_sha: Option<&str>,
+) -> Recency {
     let Some(sha) = commit_sha else {
         // No commit reference — check working tree against HEAD as a best-effort
-        return working_tree_recency(project_root, file_path);
+        return working_tree_recency(project_root, disk_path);
     };
 
     // Try to open the git repo
@@ -291,14 +444,14 @@ fn compute_recency(project_root: &Path, file_path: &str, commit_sha: Option<&str
         Err(_) => return Recency::Unknown,
     };
 
-    let span_entry = match tree.get_path(Path::new(file_path)) {
+    let span_entry = match tree.get_path(Path::new(commit_path)) {
         Ok(e) => e,
         Err(_) => return Recency::Unknown,
     };
 
-    // First check: has the file changed on disk compared to the span's commit blob?
-    // This catches both committed and uncommitted changes in one comparison.
-    let abs_path = project_root.join(file_path);
+    // Compare disk content against the commit blob. This catches both committed
+    // and uncommitted changes in one comparison.
+    let abs_path = project_root.join(disk_path);
     if let Ok(disk_content) = fs::read(&abs_path) {
         let span_blob = match repo.find_blob(span_entry.id()) {
             Ok(b) => b,
@@ -468,6 +621,56 @@ mod tests {
         };
         let result = resolve_span(dir.path(), &anchor).unwrap();
         assert_eq!(result.freshness.resolution, Resolution::Unresolved);
+    }
+
+    #[test]
+    fn resolve_follows_git_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Initialize a git repo
+        let repo = git2::Repository::init(root).unwrap();
+        let content = "line 1\nline 2\nline 3\n";
+        fs::write(root.join("old_name.rs"), content).unwrap();
+
+        // Stage and commit
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("old_name.rs")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        let commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        // Rename the file and commit again
+        fs::rename(root.join("old_name.rs"), root.join("new_name.rs")).unwrap();
+        let mut index = repo.index().unwrap();
+        index.remove_path(Path::new("old_name.rs")).unwrap();
+        index.add_path(Path::new("new_name.rs")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parent = repo.find_commit(commit_oid).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "rename", &tree, &[&parent])
+            .unwrap();
+
+        let hash = content_hash("line 1\nline 2\nline 3");
+        let anchor = SpanAnchor {
+            path: "old_name.rs".to_string(),
+            line_start: Some(1),
+            line_end: Some(3),
+            content_hash: Some(hash),
+            symbol: None,
+            snippet: None,
+            commit: Some(commit_oid.to_string()),
+        };
+
+        let result = resolve_span(root, &anchor).unwrap();
+        assert_eq!(result.freshness.resolution, Resolution::Relocated);
+        assert_eq!(result.new_path, Some("new_name.rs".to_string()));
+        assert_eq!(result.freshness.recency, Recency::Unchanged);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::env;
 
 use crate::error::Result;
 
-pub fn run(edge_id: &str, payload: Option<&str>) -> Result<()> {
+pub fn run(edge_id: &str, payload: Option<&str>, ns_override: Option<&str>) -> Result<()> {
     // Validate the target edge ID
     let target = DamaskId::parse(edge_id)
         .map_err(|e| anyhow::anyhow!("{}", e))
@@ -20,9 +20,12 @@ pub fn run(edge_id: &str, payload: Option<&str>) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{}", e))
         .context("no .damask/ found — run `damask init` first")?;
 
-    let ns = project.active_ns().ok_or_else(|| {
-        anyhow::anyhow!("no active namespace — use `damask ns set <name>` or --ns")
-    })?;
+    let ns = ns_override
+        .map(|s| s.to_string())
+        .or_else(|| project.active_ns())
+        .ok_or_else(|| {
+            anyhow::anyhow!("no active namespace — use `damask ns set <name>` or --ns")
+        })?;
 
     let payload_value = if let Some(json_str) = payload {
         serde_json::from_str(json_str).context("payload is not valid JSON")?

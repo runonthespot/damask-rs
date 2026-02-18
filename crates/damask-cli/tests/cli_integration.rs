@@ -1145,6 +1145,201 @@ fn non_ascii_payload_does_not_panic() {
 }
 
 #[test]
+fn where_ns_filters_by_namespace() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    fs::write(dir.path().join("test.rs"), "fn foo() {}\nfn bar() {}\n").unwrap();
+
+    // Create edges in namespace "alpha"
+    set_ns(&dir, "alpha");
+    let output = damask()
+        .args(["--format", "json", "span", "test.rs", "1", "1"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let span: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let span_id_a = span["id"].as_str().unwrap().to_string();
+
+    damask()
+        .args([
+            "edge",
+            &span_id_a,
+            "_",
+            "risk",
+            r#"{"summary":"Alpha risk","confidence":0.9}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Create edges in namespace "beta"
+    set_ns(&dir, "beta");
+    let output = damask()
+        .args(["--format", "json", "span", "test.rs", "2", "2"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let span: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let span_id_b = span["id"].as_str().unwrap().to_string();
+
+    damask()
+        .args([
+            "edge",
+            &span_id_b,
+            "_",
+            "risk",
+            r#"{"summary":"Beta risk","confidence":0.8}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // where --ns alpha should only show alpha edges
+    let output = damask()
+        .args(["--format", "json", "--ns", "alpha", "where", "rel=risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let edges = json["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["payload"]["summary"], "Alpha risk");
+
+    // where --ns beta should only show beta edges
+    let output = damask()
+        .args(["--format", "json", "--ns", "beta", "where", "rel=risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let edges = json["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0]["payload"]["summary"], "Beta risk");
+
+    // where without --ns should show both
+    let output = damask()
+        .args(["--format", "json", "where", "rel=risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let edges = json["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 2);
+}
+
+#[test]
+fn init_claude_creates_scaffolding() {
+    let dir = TempDir::new().unwrap();
+
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Initialized .damask/"))
+        .stdout(predicate::str::contains("Claude Code skill created"));
+
+    // Verify skill file created
+    assert!(dir.path().join(".claude/skills/damask/SKILL.md").is_file());
+
+    // Verify settings.json created with damask permission
+    let settings = fs::read_to_string(dir.path().join(".claude/settings.json")).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&settings).unwrap();
+    let allow = doc["permissions"]["allow"].as_array().unwrap();
+    assert!(allow.iter().any(|v| v.as_str() == Some("Bash(damask *)")));
+}
+
+#[test]
+fn init_claude_merges_into_existing_settings() {
+    let dir = TempDir::new().unwrap();
+
+    // First init without --claude
+    init_project(&dir);
+
+    // Manually create existing .claude/settings.json with other permissions
+    let claude_dir = dir.path().join(".claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    let existing = serde_json::json!({
+        "permissions": {
+            "allow": ["Bash(npm test)", "Read(*)"]
+        },
+        "model": "opus"
+    });
+    fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::to_string_pretty(&existing).unwrap(),
+    )
+    .unwrap();
+
+    // Run init --claude — should discover existing project and merge
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Found existing .damask/"))
+        .stdout(predicate::str::contains("Added \"Bash(damask *)\""));
+
+    // Verify merged: old permissions preserved, new one added
+    let settings = fs::read_to_string(claude_dir.join("settings.json")).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&settings).unwrap();
+    let allow = doc["permissions"]["allow"].as_array().unwrap();
+    assert!(
+        allow.iter().any(|v| v.as_str() == Some("Bash(npm test)")),
+        "existing permission should be preserved"
+    );
+    assert!(
+        allow.iter().any(|v| v.as_str() == Some("Read(*)")),
+        "existing permission should be preserved"
+    );
+    assert!(
+        allow.iter().any(|v| v.as_str() == Some("Bash(damask *)")),
+        "damask permission should be added"
+    );
+    // Non-permission fields preserved
+    assert_eq!(doc["model"], "opus", "other settings should be preserved");
+}
+
+#[test]
+fn init_claude_idempotent_no_duplicate() {
+    let dir = TempDir::new().unwrap();
+
+    // First init with --claude
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Second run — should discover existing and report already allowlisted
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already allows"));
+
+    // Verify no duplicate entry
+    let settings = fs::read_to_string(dir.path().join(".claude/settings.json")).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&settings).unwrap();
+    let allow = doc["permissions"]["allow"].as_array().unwrap();
+    let damask_count = allow
+        .iter()
+        .filter(|v| v.as_str() == Some("Bash(damask *)"))
+        .count();
+    assert_eq!(damask_count, 1, "should have exactly one damask permission entry");
+}
+
+#[test]
 fn help_shows_all_commands() {
     damask()
         .arg("--help")
@@ -1153,9 +1348,571 @@ fn help_shows_all_commands() {
         .stdout(predicate::str::contains("init"))
         .stdout(predicate::str::contains("span"))
         .stdout(predicate::str::contains("edge"))
+        .stdout(predicate::str::contains("record"))
+        .stdout(predicate::str::contains("batch"))
         .stdout(predicate::str::contains("at"))
         .stdout(predicate::str::contains("follow"))
         .stdout(predicate::str::contains("endorse"))
         .stdout(predicate::str::contains("dispute"))
         .stdout(predicate::str::contains("tui"));
+}
+
+// ── record command tests ──────────────────────────────────────────
+
+#[test]
+fn record_creates_span_and_edge() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("test.rs"), "fn foo() {}\nfn bar() {}\n").unwrap();
+
+    let output = damask()
+        .args([
+            "record",
+            "test.rs",
+            "1",
+            "2",
+            "risk",
+            r#"{"summary":"A risk","confidence":0.9}"#,
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("s_"), "should print span ID");
+    assert!(stdout.contains("e_"), "should print edge ID");
+    assert!(stdout.contains("[risk]"), "should show rel type");
+
+    // Verify JSONL has exactly 2 lines
+    let jsonl = fs::read_to_string(dir.path().join(".damask/edges/test.jsonl")).unwrap();
+    let lines: Vec<&str> = jsonl.trim().lines().collect();
+    assert_eq!(lines.len(), 2);
+    assert!(lines[0].contains("\"t\":\"span\""));
+    assert!(lines[1].contains("\"t\":\"edge\""));
+
+    // Verify edge.from == span.id
+    let span: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+    let edge: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(edge["from"], span["id"]);
+    assert!(edge["to"].is_null());
+}
+
+#[test]
+fn record_json_output_is_array() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("test.rs"), "fn foo() {}\n").unwrap();
+
+    let output = damask()
+        .args([
+            "--format",
+            "json",
+            "record",
+            "test.rs",
+            "1",
+            "1",
+            "risk",
+            r#"{"summary":"test","confidence":0.9}"#,
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let facts: Vec<serde_json::Value> = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(facts.len(), 2);
+    assert_eq!(facts[0]["t"], "span");
+    assert_eq!(facts[1]["t"], "edge");
+    assert_eq!(facts[1]["from"], facts[0]["id"]);
+}
+
+#[test]
+fn record_with_symbol() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("test.rs"), "fn foo() {}\n").unwrap();
+
+    let output = damask()
+        .args([
+            "--format",
+            "json",
+            "record",
+            "test.rs",
+            "1",
+            "1",
+            "risk",
+            r#"{"summary":"test"}"#,
+            "--symbol",
+            "foo",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let facts: Vec<serde_json::Value> =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(facts[0]["symbol"], "foo");
+}
+
+#[test]
+fn record_with_to_endpoint() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    fs::write(dir.path().join("b.rs"), "fn b() {}\n").unwrap();
+
+    // Create a target span first
+    let output = damask()
+        .args(["--format", "json", "span", "b.rs", "1", "1"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let target: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let target_id = target["id"].as_str().unwrap();
+
+    // Record with --to pointing to the target
+    let output = damask()
+        .args([
+            "--format",
+            "json",
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "depends_on",
+            r#"{"summary":"a depends on b"}"#,
+            "--to",
+            target_id,
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let facts: Vec<serde_json::Value> =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(facts[1]["to"], target_id);
+}
+
+#[test]
+fn record_rejects_missing_file() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    damask()
+        .args([
+            "record",
+            "nonexistent.rs",
+            "1",
+            "1",
+            "risk",
+            r#"{"summary":"test"}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("file not found"));
+
+    // Nothing should have been written
+    assert!(!dir.path().join(".damask/edges/test.jsonl").exists());
+}
+
+#[test]
+fn record_rejects_invalid_json() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("test.rs"), "x\n").unwrap();
+
+    damask()
+        .args(["record", "test.rs", "1", "1", "risk", "not json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not valid JSON"));
+}
+
+#[test]
+fn record_rejects_invalid_range() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("test.rs"), "x\n").unwrap();
+
+    damask()
+        .args([
+            "record",
+            "test.rs",
+            "5",
+            "1",
+            "risk",
+            r#"{"summary":"test"}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("start line"));
+}
+
+#[test]
+fn record_respects_ns_override() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    fs::write(dir.path().join("test.rs"), "x\n").unwrap();
+
+    damask()
+        .args([
+            "--ns",
+            "custom-ns",
+            "record",
+            "test.rs",
+            "1",
+            "1",
+            "risk",
+            r#"{"summary":"test"}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    assert!(dir.path().join(".damask/edges/custom-ns.jsonl").exists());
+}
+
+// ── batch command tests ───────────────────────────────────────────
+
+#[test]
+fn batch_creates_multiple_facts() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    fs::write(dir.path().join("b.rs"), "fn b() {}\n").unwrap();
+
+    let batch = r#"[
+        {"span": {"path":"a.rs", "start":1, "end":1}},
+        {"edge": {"from":"$0", "to":"_", "rel":"risk", "payload":{"summary":"risk on a","confidence":0.9}}},
+        {"span": {"path":"b.rs", "start":1, "end":1}},
+        {"edge": {"from":"$0", "to":"$2", "rel":"depends_on", "payload":{"summary":"a depends on b"}}}
+    ]"#;
+
+    let batch_file = dir.path().join("batch.json");
+    fs::write(&batch_file, batch).unwrap();
+
+    let output = damask()
+        .args(["batch", "-f", "batch.json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("4 facts created"));
+
+    // Verify JSONL has 4 lines
+    let jsonl = fs::read_to_string(dir.path().join(".damask/edges/test.jsonl")).unwrap();
+    let lines: Vec<&str> = jsonl.trim().lines().collect();
+    assert_eq!(lines.len(), 4);
+}
+
+#[test]
+fn batch_backref_resolves() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("test.rs"), "fn foo() {}\n").unwrap();
+
+    let batch = r#"[
+        {"span": {"path":"test.rs", "start":1, "end":1}},
+        {"edge": {"from":"$0", "to":"_", "rel":"risk", "payload":{"summary":"test"}}}
+    ]"#;
+
+    let batch_file = dir.path().join("batch.json");
+    fs::write(&batch_file, batch).unwrap();
+
+    let output = damask()
+        .args(["--format", "json", "batch", "-f", "batch.json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let facts: Vec<serde_json::Value> =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(facts.len(), 2);
+    assert_eq!(facts[0]["t"], "span");
+    assert_eq!(facts[1]["t"], "edge");
+    // edge.from should equal span.id
+    assert_eq!(facts[1]["from"], facts[0]["id"]);
+}
+
+#[test]
+fn batch_cross_span_reference() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    fs::write(dir.path().join("b.rs"), "fn b() {}\n").unwrap();
+
+    let batch = r#"[
+        {"span": {"path":"a.rs", "start":1, "end":1}},
+        {"edge": {"from":"$0", "to":"_", "rel":"risk", "payload":{"summary":"risk"}}},
+        {"span": {"path":"b.rs", "start":1, "end":1}},
+        {"edge": {"from":"$0", "to":"$2", "rel":"depends_on", "payload":{"summary":"dep"}}}
+    ]"#;
+
+    let batch_file = dir.path().join("batch.json");
+    fs::write(&batch_file, batch).unwrap();
+
+    let output = damask()
+        .args(["--format", "json", "batch", "-f", "batch.json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let facts: Vec<serde_json::Value> =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    // facts[3] edge should have from=$0 (span a) and to=$2 (span b)
+    assert_eq!(facts[3]["from"], facts[0]["id"]);
+    assert_eq!(facts[3]["to"], facts[2]["id"]);
+}
+
+#[test]
+fn batch_rejects_forward_reference() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("test.rs"), "x\n").unwrap();
+
+    let batch = r#"[
+        {"edge": {"from":"$1", "to":"_", "rel":"risk", "payload":{"summary":"test"}}},
+        {"span": {"path":"test.rs", "start":1, "end":1}}
+    ]"#;
+
+    let batch_file = dir.path().join("batch.json");
+    fs::write(&batch_file, batch).unwrap();
+
+    damask()
+        .args(["batch", "-f", "batch.json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must refer to an earlier item"));
+}
+
+#[test]
+fn batch_rejects_self_reference() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("test.rs"), "x\n").unwrap();
+
+    let batch = r#"[
+        {"span": {"path":"test.rs", "start":1, "end":1}},
+        {"edge": {"from":"$1", "to":"_", "rel":"risk", "payload":{"summary":"test"}}}
+    ]"#;
+
+    let batch_file = dir.path().join("batch.json");
+    fs::write(&batch_file, batch).unwrap();
+
+    damask()
+        .args(["batch", "-f", "batch.json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must refer to an earlier item"));
+}
+
+#[test]
+fn batch_rejects_missing_file() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    let batch = r#"[
+        {"span": {"path":"nonexistent.rs", "start":1, "end":1}}
+    ]"#;
+
+    let batch_file = dir.path().join("batch.json");
+    fs::write(&batch_file, batch).unwrap();
+
+    damask()
+        .args(["batch", "-f", "batch.json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("file not found"));
+
+    // Nothing should have been written
+    assert!(!dir.path().join(".damask/edges/test.jsonl").exists());
+}
+
+#[test]
+fn batch_rejects_empty_array() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    let batch_file = dir.path().join("batch.json");
+    fs::write(&batch_file, "[]").unwrap();
+
+    damask()
+        .args(["batch", "-f", "batch.json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("batch is empty"));
+}
+
+#[test]
+fn batch_json_output_is_array() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("test.rs"), "fn foo() {}\n").unwrap();
+
+    let batch = r#"[
+        {"span": {"path":"test.rs", "start":1, "end":1}},
+        {"edge": {"from":"$0", "to":"_", "rel":"risk", "payload":{"summary":"test"}}}
+    ]"#;
+
+    let batch_file = dir.path().join("batch.json");
+    fs::write(&batch_file, batch).unwrap();
+
+    let output = damask()
+        .args(["--format", "json", "batch", "-f", "batch.json"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let facts: Vec<serde_json::Value> =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(facts.len(), 2);
+}
+
+#[test]
+fn batch_all_or_nothing_on_validation_failure() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("test.rs"), "x\n").unwrap();
+
+    // First item is valid, second has forward reference — nothing should be written
+    let batch = r#"[
+        {"span": {"path":"test.rs", "start":1, "end":1}},
+        {"edge": {"from":"$5", "to":"_", "rel":"risk", "payload":{"summary":"test"}}}
+    ]"#;
+
+    let batch_file = dir.path().join("batch.json");
+    fs::write(&batch_file, batch).unwrap();
+
+    damask()
+        .args(["batch", "-f", "batch.json"])
+        .current_dir(dir.path())
+        .assert()
+        .failure();
+
+    // No JSONL file should exist
+    assert!(!dir.path().join(".damask/edges/test.jsonl").exists());
+}
+
+#[test]
+fn init_codex_creates_skill() {
+    let dir = TempDir::new().unwrap();
+
+    damask()
+        .args(["init", "--codex"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Initialized .damask/"))
+        .stdout(predicate::str::contains("Created .agents/skills/damask/SKILL.md"));
+
+    // Verify skill file exists
+    assert!(dir.path().join(".agents/skills/damask/SKILL.md").is_file());
+
+    // Verify it contains damask instructions with frontmatter
+    let content = fs::read_to_string(dir.path().join(".agents/skills/damask/SKILL.md")).unwrap();
+    assert!(content.contains("# Damask"));
+    assert!(content.contains("name: damask"));
+}
+
+#[test]
+fn init_codex_on_existing_project() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    // Run init --codex on already-initialized project
+    damask()
+        .args(["init", "--codex"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Found existing .damask/"))
+        .stdout(predicate::str::contains("Created .agents/skills/damask/SKILL.md"));
+
+    assert!(dir.path().join(".agents/skills/damask/SKILL.md").is_file());
+}
+
+#[test]
+fn init_codex_idempotent() {
+    let dir = TempDir::new().unwrap();
+
+    // First init with --codex
+    damask()
+        .args(["init", "--codex"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Second run — should detect existing skill
+    damask()
+        .args(["init", "--codex"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already exists"));
+
+    // Verify # Damask appears exactly once
+    let content = fs::read_to_string(dir.path().join(".agents/skills/damask/SKILL.md")).unwrap();
+    let count = content.matches("# Damask").count();
+    assert_eq!(count, 1, "should have exactly one damask heading");
+}
+
+#[test]
+fn batch_requires_input_flag() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    damask()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--stdin").or(predicate::str::contains("--file")));
 }

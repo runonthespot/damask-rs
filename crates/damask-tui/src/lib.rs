@@ -21,13 +21,14 @@ use ratatui::widgets::Tabs;
 use ratatui::Frame;
 
 use app::{ActiveView, App};
-use damask_store::{update_index, DamaskProject};
+use damask_store::{update_index_with_mode, DamaskProject, IndexMode};
 
 /// Run the TUI application.
 pub fn run_tui(project: &DamaskProject) -> anyhow::Result<()> {
     let db_path = project.damask_dir.join("index.db");
     let edges_dir = project.damask_dir.join("edges");
-    let conn = update_index(&db_path, &edges_dir).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let conn = update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let mut app = App::load(project, &conn)?;
 

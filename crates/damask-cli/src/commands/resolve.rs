@@ -63,36 +63,48 @@ pub fn run(span_id: &str) -> Result<()> {
     println!("  Recency: {:?}", recency);
     println!("  Resolution weight: {:.2}", weight);
 
-    // Show content at the indexed location (which is the relocated location
-    // for relocated spans, or the original location for exact spans).
-    if let (Some(start), Some(end)) = (span.line_start, span.line_end) {
-        let file_path = project.root.join(&span.path);
-        if file_path.exists() {
-            if let Ok(file) = fs::File::open(&file_path) {
-                let reader = BufReader::new(file);
-                let file_lines: Vec<String> =
-                    reader.lines().collect::<std::io::Result<Vec<_>>>().unwrap_or_default();
+    // Show content only for Exact or Relocated spans.
+    // Unresolved/Missing content would be misleading (stale or absent).
+    match resolution {
+        Resolution::Exact | Resolution::Relocated => {
+            if let (Some(start), Some(end)) = (span.line_start, span.line_end) {
+                let file_path = project.root.join(&span.path);
+                if file_path.exists() {
+                    if let Ok(file) = fs::File::open(&file_path) {
+                        let reader = BufReader::new(file);
+                        let file_lines: Vec<String> =
+                            reader.lines().collect::<std::io::Result<Vec<_>>>().unwrap_or_default();
 
-                let label = if resolution == Resolution::Relocated {
-                    "Content (relocated)"
+                        let label = if resolution == Resolution::Relocated {
+                            "Content (relocated)"
+                        } else {
+                            "Content"
+                        };
+
+                        println!();
+                        println!("  {}:", label);
+                        for (i, line) in file_lines
+                            .iter()
+                            .enumerate()
+                            .skip((start - 1) as usize)
+                            .take((end - start + 1) as usize)
+                        {
+                            println!("    {:>4} │ {}", i + 1, line);
+                        }
+                    }
                 } else {
-                    "Content"
-                };
-
-                println!();
-                println!("  {}:", label);
-                for (i, line) in file_lines
-                    .iter()
-                    .enumerate()
-                    .skip((start - 1) as usize)
-                    .take((end - start + 1) as usize)
-                {
-                    println!("    {:>4} │ {}", i + 1, line);
+                    println!();
+                    println!("  File not found: {}", span.path);
                 }
             }
-        } else {
+        }
+        Resolution::Missing => {
             println!();
             println!("  File not found: {}", span.path);
+        }
+        Resolution::Unresolved => {
+            println!();
+            println!("  (content not shown — span is unresolved)");
         }
     }
 
