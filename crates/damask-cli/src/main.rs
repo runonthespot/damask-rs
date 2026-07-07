@@ -89,7 +89,8 @@ fn main() -> anyhow::Result<()> {
             limit,
             offset,
             show_closed,
-        } => commands::where_cmd::run(&predicates, since.as_deref(), limit, offset, show_closed, cli.format, cli.ns.as_deref()),
+            sort,
+        } => commands::where_cmd::run(&predicates, since.as_deref(), limit, offset, show_closed, sort, cli.format, cli.ns.as_deref()),
         Command::Follow { id, rel, depth } => {
             commands::follow::run(&id, rel.as_deref(), depth, cli.format)
         }

@@ -101,6 +101,21 @@ fn render_markdown(data: &OrientData) -> String {
         let _ = writeln!(md, "Active namespace: `{}`.", data.active_ns);
     }
 
+    // Trust line: an agent must know upfront when much of what follows
+    // anchors to code that no longer exists.
+    if data.open_edge_total > 0 && data.stale_anchored > 0 {
+        let ratio = data.stale_anchored as f64 / data.open_edge_total as f64;
+        if ratio > 0.2 {
+            let _ = writeln!(
+                md,
+                "\n⚠ **Trust warning:** {}/{} open edges anchor to missing or unresolvable \
+                 code — treat unmarked findings below with care and prefer ✅-marked ones. \
+                 Review candidates with `damask lint`.",
+                data.stale_anchored, data.open_edge_total,
+            );
+        }
+    }
+
     for section in data.sections.iter().take(MAX_SECTIONS) {
         let _ = writeln!(md, "\n### {} ({})", section.rel, section.edges.len());
         for e in section.edges.iter().take(MAX_PER_SECTION) {
@@ -173,6 +188,29 @@ fn edge_line(e: &EdgeSummary) -> String {
         .confidence
         .map(|c| format!("({c:.2}) "))
         .unwrap_or_default();
+    let glyph = if e.glyph.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", e.glyph)
+    };
+    let marks = format!(
+        "{}{}",
+        if e.endorsements > 0 {
+            format!(" \u{00D7}{}\u{2713}", e.endorsements)
+        } else {
+            String::new()
+        },
+        if e.disputes > 0 {
+            format!(" \u{00D7}{}\u{2717}", e.disputes)
+        } else {
+            String::new()
+        },
+    );
+    let anchor = e
+        .anchor
+        .as_deref()
+        .map(|a| format!(" @ {a}"))
+        .unwrap_or_default();
     let trunc = damask_core::truncate_str(&e.summary, SUMMARY_WIDTH);
-    format!("- {conf}{trunc} [{}]", e.id)
+    format!("- {conf}{glyph}{trunc}{marks}{anchor} [{}]", e.id)
 }

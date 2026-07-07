@@ -382,6 +382,74 @@ fn where_filters_by_rel() {
 }
 
 #[test]
+fn where_output_is_ranked_and_located() {
+    // The triage surface must be actionable per row: anchor file:line in
+    // human output, score + span object in JSON, ranked order by default.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("live.rs"), "fn live() {}\nfn more() {}\n").unwrap();
+
+    let record = |file: &str, summary: &str| {
+        damask()
+            .args([
+                "record",
+                file,
+                "1",
+                "2",
+                "risk",
+                &format!(r#"{{"summary":"{summary}","confidence":0.9}}"#),
+            ])
+            .current_dir(dir.path())
+            .assert()
+            .success();
+    };
+    record("live.rs", "live finding");
+
+    // A second edge anchored to a file that then disappears → resolution
+    // becomes missing → must sink below the live finding under ranking.
+    fs::write(dir.path().join("doomed.rs"), "fn doomed() {}\nfn gone() {}\n").unwrap();
+    record("doomed.rs", "doomed finding");
+    fs::remove_file(dir.path().join("doomed.rs")).unwrap();
+
+    // Human: anchor location on the edge line.
+    damask()
+        .args(["where", "rel=risk"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("live.rs:1-2"));
+
+    // JSON: score present, span object carries path + resolution.
+    let output = damask()
+        .args(["--format", "json", "where", "rel=risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let edges = json["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 2);
+    // Ranked: the live-anchored finding outranks the missing-anchored one.
+    assert_eq!(edges[0]["span"]["path"], "live.rs");
+    assert!(edges[0]["score"].as_f64().unwrap() > edges[1]["score"].as_f64().unwrap());
+    assert_eq!(edges[1]["span"]["path"], "doomed.rs");
+    assert_eq!(edges[1]["span"]["resolution"], "missing");
+
+    // --sort ts flips to newest-first regardless of freshness.
+    let output = damask()
+        .args(["--format", "json", "where", "rel=risk", "--sort", "ts"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let edges = json["edges"].as_array().unwrap();
+    assert_eq!(edges[0]["span"]["path"], "doomed.rs", "newest first under --sort ts");
+}
+
+#[test]
 fn where_filters_by_confidence() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);
@@ -1596,6 +1664,34 @@ fn peek_file_mode_injects_and_session_dedups() {
         .assert()
         .success()
         .stdout(predicate::str::contains("No expiry check"));
+}
+
+#[test]
+fn peek_marks_stale_anchors_instead_of_vouching() {
+    // An edge whose anchor file no longer exists must be injected with an
+    // explicit staleness marker, not presented at bare stored confidence.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("doomed.rs"), "fn gone() {}\n").unwrap();
+    damask()
+        .args([
+            "record", "doomed.rs", "1", "1", "risk",
+            r#"{"summary":"Race in gone()","confidence":0.95}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    fs::remove_file(dir.path().join("doomed.rs")).unwrap();
+
+    damask()
+        .args(["peek", "--file", "doomed.rs", "--session", "s1"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Race in gone()"))
+        .stdout(predicate::str::contains("anchor code no longer exists"));
 }
 
 #[test]

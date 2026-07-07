@@ -141,7 +141,7 @@ pub fn run(file: Option<&str>, prompt: Option<&str>, session: Option<&str>) -> R
         return Ok(());
     }
 
-    let text = render(&fresh, subject.as_deref());
+    let text = render(&q, &fresh, subject.as_deref());
     match hook_event {
         Some(event) => {
             let output = serde_json::json!({
@@ -226,7 +226,23 @@ fn extract_keywords(prompt: &str) -> Vec<String> {
     out
 }
 
-fn render(edges: &[&RankedEdge], subject: Option<&str>) -> String {
+/// Explicit staleness marker for an edge's anchor span. Words, not just
+/// glyphs: injected context is consumed by models that act on text.
+fn staleness_marker(q: &IndexQuery, edge: &damask_store::index::query::EdgeRow) -> &'static str {
+    let span = super::at::edge_target_span_id(edge).and_then(|id| q.span_by_id(id).ok().flatten());
+    let Some(span) = span else {
+        return "";
+    };
+    match (span.resolution.as_deref(), span.recency.as_deref()) {
+        (Some("missing"), _) => " [\u{274C} anchor code no longer exists]",
+        (Some("unresolved"), _) => " [\u{274C} anchor unresolvable]",
+        (Some("relocated"), _) => " [\u{21AA} code moved]",
+        (_, Some("file_changed")) => " [\u{26A0} file changed since recorded]",
+        _ => "",
+    }
+}
+
+fn render(q: &IndexQuery, edges: &[&RankedEdge], subject: Option<&str>) -> String {
     let mut text = match subject {
         Some(path) => format!("[damask] Known annotations for {path}:\n"),
         None => "[damask] Possibly relevant knowledge for this request:\n".to_string(),
@@ -240,13 +256,14 @@ fn render(edges: &[&RankedEdge], subject: Option<&str>) -> String {
             .map(|c| format!(" ({c:.2})"))
             .unwrap_or_default();
         let disputed = if re.dispute_count > 0 { " [disputed]" } else { "" };
+        let stale = staleness_marker(q, &re.edge);
         let summary = env
             .summary()
             .map(|s| s.to_string())
             .unwrap_or_else(|| damask_core::truncate_str(&re.edge.payload, SUMMARY_WIDTH).to_string());
         let trunc = damask_core::truncate_str(&summary, SUMMARY_WIDTH);
         text.push_str(&format!(
-            "- {}{conf}{disputed}: {trunc} [{}]\n",
+            "- {}{conf}{stale}{disputed}: {trunc} [{}]\n",
             re.edge.rel, re.edge.id
         ));
     }

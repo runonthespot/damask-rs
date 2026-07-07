@@ -424,7 +424,7 @@ pub(crate) fn parse_recency(s: &str) -> Option<Recency> {
     }
 }
 
-fn edge_target_span_id(edge: &damask_store::index::query::EdgeRow) -> Option<&str> {
+pub(crate) fn edge_target_span_id(edge: &damask_store::index::query::EdgeRow) -> Option<&str> {
     edge.to_id
         .as_deref()
         .filter(|id| id.starts_with("s_"))
@@ -435,7 +435,7 @@ fn edge_target_span_id(edge: &damask_store::index::query::EdgeRow) -> Option<&st
         })
 }
 
-fn freshness_glyph(resolution: Option<&str>, recency: Option<&str>) -> &'static str {
+pub(crate) fn freshness_glyph(resolution: Option<&str>, recency: Option<&str>) -> &'static str {
     match (resolution, recency) {
         (Some("missing"), _) => glyphs::UNRESOLVED,
         (Some("unresolved"), _) => glyphs::UNRESOLVED,

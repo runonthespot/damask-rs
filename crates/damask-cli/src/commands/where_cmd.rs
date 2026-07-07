@@ -1,12 +1,25 @@
 use anyhow::Context;
 use damask_core::PayloadEnvelope;
-use damask_store::{needs_inactive_edges, update_index_with_mode, DamaskProject, GraphStats, IndexMode, IndexQuery, Predicate};
+use damask_store::{needs_inactive_edges, rank_edges, update_index_with_mode, DamaskProject, GraphStats, IndexMode, IndexQuery, Predicate, RankedEdge};
+use std::collections::HashMap;
 use std::env;
 
 use crate::error::Result;
 use crate::output::Format;
 
-pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, offset: usize, show_closed: bool, format: Format, ns: Option<&str>) -> Result<()> {
+use super::at::{edge_target_span_id, freshness_glyph};
+use super::helpers;
+
+/// Result ordering for `where`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum WhereSort {
+    /// Freshness- and trust-weighted ranking (same scorer as `at`).
+    Rank,
+    /// Newest first by creation timestamp.
+    Ts,
+}
+
+pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, offset: usize, show_closed: bool, sort: WhereSort, format: Format, ns: Option<&str>) -> Result<()> {
     let preds: Vec<Predicate> = predicate_strs
         .iter()
         .map(|s| Predicate::parse(s).map_err(|e| anyhow::anyhow!("{e}")))
@@ -60,28 +73,99 @@ pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, offset:
 
         // AND-compose: all predicates must match
         if preds.iter().all(|p| p.matches(edge, endorsement_count, dispute_count)) {
-            matched.push((edge, endorsement_count, dispute_count));
+            matched.push((edge.clone(), endorsement_count, dispute_count));
         }
     }
 
     let total = matched.len();
 
+    // Order results: the same freshness- and trust-weighted scorer `at`
+    // uses (so triage leads with live, verified findings), or newest-first.
+    let config = project
+        .read_config()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let now = chrono::Utc::now();
+    let ranked: Vec<RankedEdge> = match sort {
+        WhereSort::Rank => {
+            let inputs: Vec<_> = matched
+                .into_iter()
+                .map(|(edge, _, _)| {
+                    let weight = helpers::edge_resolution_weight(&q, &edge);
+                    let density = helpers::edge_signal_density(&q, &edge);
+                    let mut input = helpers::ranking_input(&q, &config, edge, weight, now);
+                    input.signal_density = density;
+                    input
+                })
+                .collect();
+            rank_edges(inputs, usize::MAX)
+        }
+        WhereSort::Ts => {
+            let mut v: Vec<RankedEdge> = matched
+                .into_iter()
+                .map(|(edge, endorsement_count, dispute_count)| RankedEdge {
+                    edge,
+                    score: 0.0,
+                    endorsement_count,
+                    dispute_count,
+                })
+                .collect();
+            v.sort_by(|a, b| b.edge.ts.cmp(&a.edge.ts));
+            v
+        }
+    };
+
     // Apply offset + limit
-    let page: Vec<_> = matched.into_iter().skip(offset).take(limit).collect();
+    let page: Vec<&RankedEdge> = ranked.iter().skip(offset).take(limit).collect();
     let count = page.len();
+
+    // Anchor spans for location + freshness display (effective path/lines:
+    // the index stores the post-rename, post-relocation values).
+    let mut anchor_spans: HashMap<String, damask_store::index::query::SpanRow> = HashMap::new();
+    for re in &page {
+        if let Some(span_id) = edge_target_span_id(&re.edge) {
+            if !anchor_spans.contains_key(span_id) {
+                if let Some(span) = q.span_by_id(span_id).ok().flatten() {
+                    anchor_spans.insert(span_id.to_string(), span);
+                }
+            }
+        }
+    }
 
     let predicate_display = predicate_strs.join(" AND ");
 
     match format {
-        Format::Human => print_human(&page, &predicate_display, offset, limit, count, total, closed_hidden as usize, &preds, &all_edges, &q),
-        Format::Json => print_json(&page, offset, limit, count, total, closed_hidden, &graph_stats, &preds, &all_edges, &q),
+        Format::Human => print_human(&page, &anchor_spans, &predicate_display, offset, limit, count, total, closed_hidden as usize, &preds, &all_edges, &q),
+        Format::Json => print_json(&page, &anchor_spans, offset, limit, count, total, closed_hidden, &graph_stats, &preds, &all_edges, &q),
     }
 
     Ok(())
 }
 
+/// Location suffix for an edge's anchor span: `src/auth.rs:42-67 ⚠`.
+/// Empty for unanchored edges.
+fn anchor_display(
+    edge: &damask_store::index::query::EdgeRow,
+    anchor_spans: &HashMap<String, damask_store::index::query::SpanRow>,
+) -> String {
+    let Some(span) = edge_target_span_id(edge).and_then(|id| anchor_spans.get(id)) else {
+        return String::new();
+    };
+    let lines = match (span.line_start, span.line_end) {
+        (Some(s), Some(e)) => format!(":{}-{}", s, e),
+        _ => String::new(),
+    };
+    let glyph = freshness_glyph(span.resolution.as_deref(), span.recency.as_deref());
+    let glyph_suffix = if glyph.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", glyph)
+    };
+    format!(" {}{}{}", span.path, lines, glyph_suffix)
+}
+
 fn print_human(
-    matched: &[(&damask_store::index::query::EdgeRow, u32, u32)],
+    matched: &[&RankedEdge],
+    anchor_spans: &HashMap<String, damask_store::index::query::SpanRow>,
     predicate: &str,
     offset: usize,
     _limit: usize,
@@ -107,7 +191,8 @@ fn print_human(
     }
 
     println!();
-    for (edge, endorsement_count, dispute_count) in matched {
+    for re in matched {
+        let edge = &re.edge;
         let payload: serde_json::Value =
             serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
         let env = PayloadEnvelope::new(&payload);
@@ -119,13 +204,13 @@ fn print_human(
             .unwrap_or_default();
 
         // Endorsement/dispute counts
-        let endorsement_str = if *endorsement_count > 0 {
-            format!(" \u{00D7}{}\u{2713}", endorsement_count)
+        let endorsement_str = if re.endorsement_count > 0 {
+            format!(" \u{00D7}{}\u{2713}", re.endorsement_count)
         } else {
             String::new()
         };
-        let dispute_str = if *dispute_count > 0 {
-            format!(" \u{00D7}{}\u{2717}", dispute_count)
+        let dispute_str = if re.dispute_count > 0 {
+            format!(" \u{00D7}{}\u{2717}", re.dispute_count)
         } else {
             String::new()
         };
@@ -135,16 +220,21 @@ fn print_human(
             .summary()
             .unwrap_or_else(|| damask_core::truncate_str(edge.payload.as_str(), 60));
 
-        // From info
-        let from_str = edge.from_id.as_deref().unwrap_or("_");
+        // Anchor location + freshness, straight from the spans table.
+        let anchor = anchor_display(edge, anchor_spans);
 
         let date = edge.ts.split('T').next().unwrap_or(&edge.ts);
 
         println!(
-            "  {} [{}]{}{}{} — {}",
-            edge.id, edge.rel, conf, endorsement_str, dispute_str, summary,
+            "  {} [{}]{}{}{}{} — {}",
+            edge.id, edge.rel, conf, endorsement_str, dispute_str, anchor, summary,
         );
-        println!("    from: {}  [{}, {}]", from_str, edge.ns, date);
+        if anchor.is_empty() {
+            let from_str = edge.from_id.as_deref().unwrap_or("_");
+            println!("    from: {}  [{}, {}]", from_str, edge.ns, date);
+        } else {
+            println!("    [{}, {}]", edge.ns, date);
+        }
         println!();
     }
 
@@ -167,7 +257,8 @@ fn print_human(
 }
 
 fn print_json(
-    matched: &[(&damask_store::index::query::EdgeRow, u32, u32)],
+    matched: &[&RankedEdge],
+    anchor_spans: &HashMap<String, damask_store::index::query::SpanRow>,
     offset: usize,
     limit: usize,
     count: usize,
@@ -180,9 +271,23 @@ fn print_json(
 ) {
     let edges_json: Vec<serde_json::Value> = matched
         .iter()
-        .map(|(edge, endorsements, disputes)| {
+        .map(|re| {
+            let edge = &re.edge;
             let payload: serde_json::Value =
                 serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+            let span_json = edge_target_span_id(edge)
+                .and_then(|id| anchor_spans.get(id))
+                .map(|span| {
+                    serde_json::json!({
+                        "id": span.id,
+                        "path": span.path,
+                        "line_start": span.line_start,
+                        "line_end": span.line_end,
+                        "resolution": span.resolution,
+                        "recency": span.recency,
+                    })
+                })
+                .unwrap_or(serde_json::Value::Null);
             serde_json::json!({
                 "id": edge.id,
                 "from": edge.from_id,
@@ -191,8 +296,10 @@ fn print_json(
                 "payload": payload,
                 "ns": edge.ns,
                 "ts": edge.ts,
-                "endorsements": endorsements,
-                "disputes": disputes,
+                "score": re.score,
+                "endorsements": re.endorsement_count,
+                "disputes": re.dispute_count,
+                "span": span_json,
             })
         })
         .collect();

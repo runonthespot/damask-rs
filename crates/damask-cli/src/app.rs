@@ -201,6 +201,10 @@ pub enum Command {
         /// Include closed edges in results.
         #[arg(long)]
         show_closed: bool,
+
+        /// Result order: rank (freshness- and trust-weighted, default) or ts (newest first).
+        #[arg(long, value_enum, default_value_t = crate::commands::where_cmd::WhereSort::Rank)]
+        sort: crate::commands::where_cmd::WhereSort,
     },
 
     /// Traverse edges from a span or edge.

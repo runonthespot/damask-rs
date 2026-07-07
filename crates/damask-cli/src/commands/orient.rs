@@ -1,12 +1,18 @@
 use anyhow::Context;
 use damask_core::PayloadEnvelope;
-use damask_store::index::query::EdgeRow;
-use damask_store::{update_index_with_mode, DamaskProject, GraphStats, IndexMode, IndexQuery};
+use damask_store::index::query::{EdgeRow, SpanRow};
+use damask_store::{
+    rank_edges, update_index_with_mode, DamaskProject, GraphStats, IndexMode, IndexQuery,
+    RankingInput,
+};
 use std::collections::HashMap;
 use std::env;
 
 use crate::error::Result;
 use crate::output::Format;
+
+use super::at::{edge_target_span_id, freshness_glyph};
+use super::helpers;
 
 /// Maximum edges to show per section in human output.
 const SECTION_LIMIT: usize = 5;
@@ -27,6 +33,10 @@ pub(crate) struct OrientData {
     /// Spans whose anchor drifted (non-exact resolution) or whose file
     /// changed since annotation — their edges deserve re-confirmation.
     pub(crate) suspect_spans: Vec<SuspectSpan>,
+    /// Open edges considered for trust accounting.
+    pub(crate) open_edge_total: usize,
+    /// Of those, edges anchored to missing/unresolvable code.
+    pub(crate) stale_anchored: usize,
 }
 
 pub(crate) struct SuspectSpan {
@@ -56,12 +66,32 @@ pub(crate) struct EdgeSummary {
     pub(crate) confidence: Option<f64>,
     pub(crate) ns: String,
     pub(crate) ts: String,
+    pub(crate) endorsements: u32,
+    pub(crate) disputes: u32,
+    /// Anchor location `path:start-end` from the spans table (effective,
+    /// post-rename/relocation values), when the edge has a span endpoint.
+    pub(crate) anchor: Option<String>,
+    /// Freshness glyph for the anchor span ("" when unknown/unanchored).
+    pub(crate) glyph: &'static str,
 }
 
-fn edge_to_summary(edge: &EdgeRow) -> EdgeSummary {
+fn edge_to_summary(
+    edge: &EdgeRow,
+    spans: &HashMap<String, SpanRow>,
+    endorse_counts: &HashMap<String, u32>,
+    dispute_counts: &HashMap<String, u32>,
+) -> EdgeSummary {
     let payload: serde_json::Value =
         serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
     let env = PayloadEnvelope::new(&payload);
+    let anchor_span = edge_target_span_id(edge).and_then(|id| spans.get(id));
+    let anchor = anchor_span.map(|s| match (s.line_start, s.line_end) {
+        (Some(a), Some(b)) => format!("{}:{}-{}", s.path, a, b),
+        _ => s.path.clone(),
+    });
+    let glyph = anchor_span
+        .map(|s| freshness_glyph(s.resolution.as_deref(), s.recency.as_deref()))
+        .unwrap_or("");
     EdgeSummary {
         id: edge.id.clone(),
         rel: edge.rel.clone(),
@@ -72,6 +102,10 @@ fn edge_to_summary(edge: &EdgeRow) -> EdgeSummary {
         confidence: env.confidence(),
         ns: edge.ns.clone(),
         ts: edge.ts.clone(),
+        endorsements: endorse_counts.get(&edge.id).copied().unwrap_or(0),
+        disputes: dispute_counts.get(&edge.id).copied().unwrap_or(0),
+        anchor,
+        glyph,
     }
 }
 
@@ -81,7 +115,7 @@ fn passes_filters(
     rel_filter: Option<&str>,
     tag_filter: Option<&str>,
     uncontested: bool,
-    q: &IndexQuery,
+    dispute_counts: &HashMap<String, u32>,
 ) -> bool {
     if let Some(rel) = rel_filter {
         if edge.rel != rel {
@@ -97,11 +131,8 @@ fn passes_filters(
             return false;
         }
     }
-    if uncontested {
-        let dispute_count = q.dispute_count(&edge.id).unwrap_or(0);
-        if dispute_count > 0 {
-            return false;
-        }
+    if uncontested && dispute_counts.get(&edge.id).copied().unwrap_or(0) > 0 {
+        return false;
     }
     true
 }
@@ -139,6 +170,21 @@ pub(crate) fn collect(rel_filter: Option<&str>, tag_filter: Option<&str>, uncont
         q.all_active_open_edges().map_err(|e| anyhow::anyhow!("{}", e))?
     };
 
+    // Bulk lookups — one query each, instead of per-edge/per-span loops.
+    let spans_map: HashMap<String, SpanRow> = q
+        .all_spans_chronological()
+        .map_err(|e| anyhow::anyhow!("{}", e))?
+        .into_iter()
+        .map(|s| (s.id.clone(), s))
+        .collect();
+    let endorse_counts = q
+        .endorsement_counts()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let dispute_counts = q.dispute_counts().map_err(|e| anyhow::anyhow!("{}", e))?;
+    let config = project
+        .read_config()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
     let active_ns = project.active_ns().unwrap_or_default();
     let ns_list = project
         .list_namespaces()
@@ -170,73 +216,127 @@ pub(crate) fn collect(rel_filter: Option<&str>, tag_filter: Option<&str>, uncont
     // Filter edges before bucketing
     let has_filters = rel_filter.is_some() || tag_filter.is_some() || uncontested;
     let filtered_edges: Vec<&EdgeRow> = if has_filters {
-        all_edges.iter().filter(|e| passes_filters(e, rel_filter, tag_filter, uncontested, &q)).collect()
+        all_edges.iter().filter(|e| passes_filters(e, rel_filter, tag_filter, uncontested, &dispute_counts)).collect()
     } else {
         all_edges.iter().collect()
     };
 
     // Group edges by rel type dynamically
-    let mut by_rel: HashMap<String, Vec<EdgeSummary>> = HashMap::new();
+    let mut by_rel: HashMap<String, Vec<&EdgeRow>> = HashMap::new();
     for edge in &filtered_edges {
-        by_rel
-            .entry(edge.rel.clone())
-            .or_default()
-            .push(edge_to_summary(edge));
+        by_rel.entry(edge.rel.clone()).or_default().push(edge);
     }
 
-    // Sort each group by confidence descending
-    for edges in by_rel.values_mut() {
-        edges.sort_by(|a, b| {
-            b.confidence
-                .unwrap_or(0.0)
-                .partial_cmp(&a.confidence.unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-    }
+    // Rank each group with the same freshness- and trust-weighted scorer
+    // `at` uses — NOT raw stored confidence, which lets months-dead,
+    // many-times-disputed findings lead every section forever.
+    let now = chrono::Utc::now();
+    let rank_group = |edges: Vec<&EdgeRow>| -> Vec<EdgeSummary> {
+        let inputs: Vec<RankingInput> = edges
+            .into_iter()
+            .map(|edge| {
+                let anchor_span = edge_target_span_id(edge).and_then(|id| spans_map.get(id));
+                let resolution_weight = anchor_span
+                    .map(helpers::span_freshness_weight)
+                    .unwrap_or(1.0);
+                let signal_density = helpers::payload_signal_density(
+                    anchor_span.and_then(|s| s.snippet.as_deref()),
+                    &edge.payload,
+                );
+                let effective_ts = chrono::DateTime::parse_from_rfc3339(&edge.ts)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or(now);
+                RankingInput {
+                    edge: edge.clone(),
+                    endorsement_count: endorse_counts.get(&edge.id).copied().unwrap_or(0),
+                    dispute_count: dispute_counts.get(&edge.id).copied().unwrap_or(0),
+                    effective_ts,
+                    half_life_days: config.decay_half_life_days(&edge.ns),
+                    now,
+                    resolution_weight,
+                    signal_density,
+                }
+            })
+            .collect();
+        rank_edges(inputs, usize::MAX)
+            .iter()
+            .map(|re| edge_to_summary(&re.edge, &spans_map, &endorse_counts, &dispute_counts))
+            .collect()
+    };
 
     // Build sections sorted by edge count descending (largest groups first)
     let mut sections: Vec<RelSection> = by_rel
         .into_iter()
-        .map(|(rel, edges)| RelSection { rel, edges })
+        .map(|(rel, edges)| RelSection {
+            rel,
+            edges: rank_group(edges),
+        })
         .collect();
     sections.sort_by(|a, b| b.edges.len().cmp(&a.edges.len()));
 
     // Recent edges: last 5 by timestamp (from filtered set)
-    let mut recent: Vec<EdgeSummary> = filtered_edges.iter().map(|e| edge_to_summary(e)).collect();
+    let mut recent: Vec<EdgeSummary> = filtered_edges
+        .iter()
+        .map(|e| edge_to_summary(e, &spans_map, &endorse_counts, &dispute_counts))
+        .collect();
     recent.sort_by(|a, b| b.ts.cmp(&a.ts));
     recent.truncate(SECTION_LIMIT);
+
+    // Open-edge counts per span and trust accounting, derived from the
+    // already-loaded edge set in one pass — no per-span queries.
+    let mut open_edges_by_span: HashMap<&str, usize> = HashMap::new();
+    let mut open_edge_total = 0usize;
+    let mut stale_anchored = 0usize;
+    for edge in &all_edges {
+        if edge.is_closed {
+            continue;
+        }
+        open_edge_total += 1;
+        for endpoint in [edge.from_id.as_deref(), edge.to_id.as_deref()] {
+            if let Some(id) = endpoint.filter(|id| id.starts_with("s_")) {
+                *open_edges_by_span.entry(id).or_insert(0) += 1;
+            }
+        }
+        if let Some(span) = edge_target_span_id(edge).and_then(|id| spans_map.get(id)) {
+            if matches!(span.resolution.as_deref(), Some("missing") | Some("unresolved")) {
+                stale_anchored += 1;
+            }
+        }
+    }
 
     // Suspect spans: drifted anchors or changed files, with open edges
     // attached — ordered by how much knowledge hangs off them.
     let mut suspect_spans: Vec<SuspectSpan> = Vec::new();
-    if let Ok(all_spans) = q.all_spans_chronological() {
-        for span in all_spans {
-            let resolution = span.resolution.as_deref().unwrap_or("exact");
-            let recency = span.recency.as_deref().unwrap_or("unknown");
-            let suspect = resolution != "exact" || recency == "file_changed";
-            if !suspect {
-                continue;
-            }
-            let open_edge_count = q
-                .edges_for_span_open(&span.id)
-                .map(|e| e.len())
-                .unwrap_or(0);
-            if open_edge_count == 0 {
-                continue;
-            }
-            suspect_spans.push(SuspectSpan {
-                path: span.path.clone(),
-                lines: match (span.line_start, span.line_end) {
-                    (Some(s), Some(e)) => Some((s, e)),
-                    _ => None,
-                },
-                resolution: resolution.to_string(),
-                recency: recency.to_string(),
-                open_edge_count,
-            });
+    for span in spans_map.values() {
+        let resolution = span.resolution.as_deref().unwrap_or("exact");
+        let recency = span.recency.as_deref().unwrap_or("unknown");
+        let suspect = resolution != "exact" || recency == "file_changed";
+        if !suspect {
+            continue;
         }
+        let open_edge_count = open_edges_by_span
+            .get(span.id.as_str())
+            .copied()
+            .unwrap_or(0);
+        if open_edge_count == 0 {
+            continue;
+        }
+        suspect_spans.push(SuspectSpan {
+            path: span.path.clone(),
+            lines: match (span.line_start, span.line_end) {
+                (Some(s), Some(e)) => Some((s, e)),
+                _ => None,
+            },
+            resolution: resolution.to_string(),
+            recency: recency.to_string(),
+            open_edge_count,
+        });
     }
-    suspect_spans.sort_by(|a, b| b.open_edge_count.cmp(&a.open_edge_count));
+    suspect_spans.sort_by(|a, b| {
+        b.open_edge_count
+            .cmp(&a.open_edge_count)
+            .then_with(|| a.path.cmp(&b.path))
+    });
 
     Ok(OrientData {
         active_ns,
@@ -251,6 +351,8 @@ pub(crate) fn collect(rel_filter: Option<&str>, tag_filter: Option<&str>, uncont
         sections,
         recent,
         suspect_spans,
+        open_edge_total,
+        stale_anchored,
     })
 }
 
@@ -286,6 +388,7 @@ fn print_human(data: &OrientData) {
     if !data.active_ns.is_empty() {
         println!("  Active namespace: {}", data.active_ns);
     }
+    print_trust_line(data);
 
     // Namespaces with rel breakdown
     println!();
@@ -330,6 +433,22 @@ fn print_human(data: &OrientData) {
     println!();
 }
 
+/// One-line trust warning when a meaningful share of open edges anchor to
+/// code that no longer exists — a store that would otherwise present as
+/// pristine while recommending dead findings.
+fn print_trust_line(data: &OrientData) {
+    if data.open_edge_total == 0 || data.stale_anchored == 0 {
+        return;
+    }
+    let ratio = data.stale_anchored as f64 / data.open_edge_total as f64;
+    if ratio > 0.2 {
+        println!(
+            "  \u{26A0} trust: {}/{} open edges anchor to missing or unresolvable code — review with `damask lint`",
+            data.stale_anchored, data.open_edge_total,
+        );
+    }
+}
+
 fn print_section(title: &str, edges: &[EdgeSummary]) {
     if edges.is_empty() {
         return;
@@ -342,8 +461,31 @@ fn print_section(title: &str, edges: &[EdgeSummary]) {
             .confidence
             .map(|c| format!("({:.2}) ", c))
             .unwrap_or_default();
+        let glyph = if e.glyph.is_empty() {
+            String::new()
+        } else {
+            format!("{} ", e.glyph)
+        };
+        let marks = format!(
+            "{}{}",
+            if e.endorsements > 0 {
+                format!(" \u{00D7}{}\u{2713}", e.endorsements)
+            } else {
+                String::new()
+            },
+            if e.disputes > 0 {
+                format!(" \u{00D7}{}\u{2717}", e.disputes)
+            } else {
+                String::new()
+            },
+        );
+        let anchor = e
+            .anchor
+            .as_deref()
+            .map(|a| format!(" @ {}", a))
+            .unwrap_or_default();
         let trunc = damask_core::truncate_str(&e.summary, 70);
-        println!("    {conf}{trunc}");
+        println!("    {conf}{glyph}{trunc}{marks}{anchor}");
     }
     if total > SECTION_LIMIT {
         println!("    ... and {} more", total - SECTION_LIMIT);
@@ -362,6 +504,10 @@ fn summaries_to_json(edges: &[EdgeSummary], limit: usize) -> serde_json::Value {
                 "confidence": e.confidence,
                 "ns": e.ns,
                 "ts": e.ts,
+                "endorsements": e.endorsements,
+                "disputes": e.disputes,
+                "anchor": e.anchor,
+                "freshness": if e.glyph.is_empty() { None } else { Some(e.glyph) },
             })
         })
         .collect();
@@ -405,6 +551,10 @@ fn print_json(data: &OrientData) {
             },
         },
         "cold_start": data.active_edge_count == 0,
+        "trust": {
+            "open_edges": data.open_edge_total,
+            "stale_anchored": data.stale_anchored,
+        },
         "status": {
             "namespaces": data.namespace_count,
             "active_ns": if data.active_ns.is_empty() { None } else { Some(&data.active_ns) },

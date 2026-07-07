@@ -1,10 +1,43 @@
 use anyhow::{bail, Context};
 use damask_core::{DamaskId, Edge, EdgeId, Freshness, Recency, Resolution, Span, SpanId};
-use damask_store::index::query::EdgeRow;
+use damask_store::index::query::{EdgeRow, SpanRow};
 use damask_store::{DamaskProject, IndexQuery};
 use std::path::Path;
 
 use crate::error::Result;
+
+/// Resolution weight from a span row's stored freshness columns.
+pub fn span_freshness_weight(span: &SpanRow) -> f64 {
+    let resolution = span
+        .resolution
+        .as_deref()
+        .and_then(super::at::parse_resolution)
+        .unwrap_or(Resolution::Exact);
+    let recency = span
+        .recency
+        .as_deref()
+        .and_then(super::at::parse_recency)
+        .unwrap_or(Recency::Unknown);
+    Freshness::new(resolution, recency).resolution_weight()
+}
+
+/// Signal density from a snippet + payload pair: penalizes summaries that
+/// merely restate the anchored snippet. 1.0 when either side is absent.
+pub fn payload_signal_density(snippet: Option<&str>, payload: &str) -> f64 {
+    let Some(snippet) = snippet else {
+        return 1.0;
+    };
+    let payload: serde_json::Value =
+        serde_json::from_str(payload).unwrap_or(serde_json::json!({}));
+    let env = damask_core::PayloadEnvelope::new(&payload);
+    match env.summary() {
+        Some(summary) => {
+            let overlap = damask_store::token_overlap_ratio(summary, snippet);
+            1.0 - (overlap * 0.5)
+        }
+        None => 1.0,
+    }
+}
 
 /// Resolution weight for an edge, from the stored freshness of its first
 /// span endpoint (`from` preferred). 1.0 when no span is attached or the
@@ -21,17 +54,7 @@ pub fn edge_resolution_weight(q: &IndexQuery, edge: &EdgeRow) -> f64 {
     let Some(span) = q.span_by_id(id).ok().flatten() else {
         return 1.0;
     };
-    let resolution = span
-        .resolution
-        .as_deref()
-        .and_then(super::at::parse_resolution)
-        .unwrap_or(Resolution::Exact);
-    let recency = span
-        .recency
-        .as_deref()
-        .and_then(super::at::parse_recency)
-        .unwrap_or(Recency::Unknown);
-    Freshness::new(resolution, recency).resolution_weight()
+    span_freshness_weight(&span)
 }
 
 /// Ambient agent identity for provenance stamping. `DAMASK_AGENT` wins;
@@ -171,19 +194,7 @@ pub fn edge_signal_density(q: &IndexQuery, edge: &EdgeRow) -> f64 {
     let snippet = span_id
         .and_then(|id| q.span_by_id(id).ok().flatten())
         .and_then(|s| s.snippet);
-    let Some(snippet) = snippet else {
-        return 1.0;
-    };
-    let payload: serde_json::Value =
-        serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
-    let env = damask_core::PayloadEnvelope::new(&payload);
-    match env.summary() {
-        Some(summary) => {
-            let overlap = damask_store::token_overlap_ratio(summary, &snippet);
-            1.0 - (overlap * 0.5)
-        }
-        None => 1.0,
-    }
+    payload_signal_density(snippet.as_deref(), &edge.payload)
 }
 
 /// Resolve the active namespace from an override flag, env var, or project config.

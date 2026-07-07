@@ -209,6 +209,41 @@ impl<'a> IndexQuery<'a> {
         Ok(count)
     }
 
+    /// Endorsement counts for every endorsed edge in one GROUP BY query:
+    /// edge_id → distinct (agent:session) count, same dedup semantics as
+    /// `endorsement_count`. Use this instead of per-edge counts in loops.
+    pub fn endorsement_counts(&self) -> Result<std::collections::HashMap<String, u32>, StoreError> {
+        self.meta_edge_counts("endorsed")
+    }
+
+    /// Dispute counts for every disputed edge in one GROUP BY query.
+    pub fn dispute_counts(&self) -> Result<std::collections::HashMap<String, u32>, StoreError> {
+        self.meta_edge_counts("disputed")
+    }
+
+    fn meta_edge_counts(
+        &self,
+        rel: &str,
+    ) -> Result<std::collections::HashMap<String, u32>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT from_id, COUNT(DISTINCT COALESCE(agent || ':' || session, agent, id))
+                 FROM edges WHERE rel = ?1 AND from_id IS NOT NULL GROUP BY from_id",
+            )
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let mut rows = stmt
+            .query(rusqlite::params![rel])
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let mut map = std::collections::HashMap::new();
+        while let Some(row) = rows.next().map_err(|e| StoreError::Io(e.to_string()))? {
+            let id: String = row.get(0).map_err(|e| StoreError::Io(e.to_string()))?;
+            let count: u32 = row.get(1).map_err(|e| StoreError::Io(e.to_string()))?;
+            map.insert(id, count);
+        }
+        Ok(map)
+    }
+
     /// Get the most recent endorsement timestamp for an edge.
     /// Meta-edges use from_id = target edge.
     pub fn latest_endorsement_ts(&self, edge_id: &str) -> Result<Option<String>, StoreError> {
