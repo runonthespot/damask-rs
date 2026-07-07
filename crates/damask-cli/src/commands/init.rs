@@ -35,7 +35,7 @@ fn sync_file(path: &Path, content: &str, label: &str) -> Result<()> {
 // it; peek/harvest fall back silently. The `! command -v || damask ...` form
 // preserves damask's own exit code when it IS installed (Stop/PostToolUse
 // hooks use exit codes deliberately).
-const BRIEFING_HOOK_COMMAND: &str = "if command -v damask >/dev/null 2>&1; then damask briefing; else echo 'This repo has a damask knowledge graph (.damask/) shared across agent sessions. Install the damask CLI to inherit it: cargo install damask'; fi";
+const BRIEFING_HOOK_COMMAND: &str = "if command -v damask >/dev/null 2>&1; then damask briefing; else echo 'This repo has a damask knowledge graph (.damask/) shared across agent sessions. Install the damask CLI to inherit it: clone the damask repo and run cargo install --path crates/damask-cli'; fi";
 const HARVEST_HOOK_COMMAND: &str = "! command -v damask >/dev/null 2>&1 || damask harvest";
 const PEEK_HOOK_COMMAND: &str = "! command -v damask >/dev/null 2>&1 || damask peek";
 const BRIEFING_HOOK_KEY: &str = "damask briefing";

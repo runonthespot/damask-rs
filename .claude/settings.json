@@ -15,7 +15,7 @@
       {
         "hooks": [
           {
-            "command": "if command -v damask >/dev/null 2>&1; then damask briefing; else echo 'This repo has a damask knowledge graph (.damask/) shared across agent sessions. Install the damask CLI to inherit it: cargo install damask'; fi",
+            "command": "if command -v damask >/dev/null 2>&1; then damask briefing; else echo 'This repo has a damask knowledge graph (.damask/) shared across agent sessions. Install the damask CLI to inherit it: clone the damask repo and run cargo install --path crates/damask-cli'; fi",
             "type": "command"
           }
         ],
