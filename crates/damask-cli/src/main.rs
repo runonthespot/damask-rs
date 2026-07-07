@@ -176,6 +176,7 @@ fn main() -> anyhow::Result<()> {
         Command::Resolve { span_id } => commands::resolve::run(&span_id),
         Command::Log { limit, since } => commands::log::run(cli.format, limit, since.as_deref()),
         Command::Confirm { id } => commands::confirm::run(&id, cli.format),
+        Command::Tag { edge_id, tags } => commands::tag::run(&edge_id, &tags, cli.format),
         Command::Triage {
             close_deleted,
             close_refuted,

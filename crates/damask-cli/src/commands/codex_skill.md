@@ -57,6 +57,7 @@ Use `close` when a finding is resolved, `dispute` only when it is wrong.
 | `endorse <id>` | Signal confirmation |
 | `dispute <id> <payload>` | Signal contradiction |
 | `close <id>` | Mark resolved |
+| `tag <id> <tag>...` | Add tags to an existing edge (append-only) |
 | `follow <id> [rel]` | Traverse edge graph |
 | `why <id>` | Provenance: who created/endorsed/disputed |
 | `ns set <name>` | Switch namespace |

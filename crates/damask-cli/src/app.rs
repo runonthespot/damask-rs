@@ -314,6 +314,16 @@ pub enum Command {
         close_refuted: bool,
     },
 
+    /// Add tags to an existing edge (append-only, same-id re-emission; id prefixes ok).
+    Tag {
+        /// Edge id (e_..., unique prefix accepted).
+        edge_id: String,
+
+        /// Tags to add (with or without leading #).
+        #[arg(required = true)]
+        tags: Vec<String>,
+    },
+
     /// Mark an edge as closed (resolved). Creates a rel=closed meta-edge.
     Close {
         /// Edge ID to close (required unless --batch).
