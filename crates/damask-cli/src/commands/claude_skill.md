@@ -1,6 +1,6 @@
 ---
 name: damask
-description: Use damask to query, record, and manage structured knowledge about this codebase. Invoke when exploring code, recording findings, checking risks/gotchas, or auditing.
+description: This repo has a knowledge graph (.damask/) of verified findings from previous sessions. Invoke BEFORE exploring, refactoring, or debugging unfamiliar code (inherit what past agents learned instead of re-deriving it); when about to record, note, or remember a finding, risk, gotcha, or decision; after fixing a known issue (close its edge); when auditing or reviewing; or on any mention of damask, annotations, knowledge graph, "what do we know about", "why is this like this", or "record this".
 allowed-tools: Bash(damask *)
 ---
 
