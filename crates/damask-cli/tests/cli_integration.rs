@@ -453,7 +453,7 @@ fn where_no_matches() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("No edges matching"));
+        .stdout(predicate::str::contains("0 edges matching"));
 }
 
 #[test]
@@ -1246,7 +1246,7 @@ fn init_claude_creates_scaffolding() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Initialized .damask/"))
-        .stdout(predicate::str::contains("Claude Code skill created"));
+        .stdout(predicate::str::contains("Claude Code skill synced"));
 
     // Verify skill file created
     assert!(dir.path().join(".claude/skills/damask/SKILL.md").is_file());
@@ -1337,6 +1337,1046 @@ fn init_claude_idempotent_no_duplicate() {
         .filter(|v| v.as_str() == Some("Bash(damask *)"))
         .count();
     assert_eq!(damask_count, 1, "should have exactly one damask permission entry");
+}
+
+#[test]
+fn init_claude_installs_hooks() {
+    let dir = TempDir::new().unwrap();
+
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Hooks installed"));
+
+    let settings = fs::read_to_string(dir.path().join(".claude/settings.json")).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&settings).unwrap();
+
+    let hook_command = |doc: &serde_json::Value, event: &str| -> String {
+        doc["hooks"][event].as_array().unwrap()[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    // Every hook is guarded: a teammate without damask on PATH must get
+    // zero command-not-found errors from the committed settings.json.
+    let briefing = hook_command(&doc, "SessionStart");
+    assert!(briefing.contains("damask briefing"));
+    assert!(
+        briefing.contains("command -v damask"),
+        "SessionStart hook must be guarded"
+    );
+    assert!(
+        briefing.contains("Install the damask CLI"),
+        "SessionStart fallback should advertise how to install"
+    );
+    let stop = hook_command(&doc, "Stop");
+    assert!(stop.contains("damask harvest"));
+    assert!(stop.contains("command -v damask"), "Stop hook must be guarded");
+    let post_tool_entries = doc["hooks"]["PostToolUse"].as_array().unwrap();
+    let post_tool = hook_command(&doc, "PostToolUse");
+    assert!(post_tool.contains("damask peek"));
+    assert!(
+        post_tool.contains("command -v damask"),
+        "PostToolUse hook must be guarded"
+    );
+    assert_eq!(
+        post_tool_entries[0]["matcher"], "Read|Edit|Write|MultiEdit|NotebookEdit",
+        "peek should only fire on file-touching tools"
+    );
+    let prompt_submit = hook_command(&doc, "UserPromptSubmit");
+    assert!(prompt_submit.contains("damask peek"));
+    assert!(prompt_submit.contains("command -v damask"));
+
+    // Second run must not duplicate hook entries.
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    let settings = fs::read_to_string(dir.path().join(".claude/settings.json")).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&settings).unwrap();
+    assert_eq!(doc["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["hooks"]["Stop"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["hooks"]["UserPromptSubmit"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn init_claude_upgrades_unguarded_hooks_in_place() {
+    // Older installs wrote bare `damask briefing` etc. Re-running init must
+    // upgrade those entries to the guarded form without duplicating them.
+    let dir = TempDir::new().unwrap();
+    fs::create_dir_all(dir.path().join(".claude")).unwrap();
+    fs::write(
+        dir.path().join(".claude/settings.json"),
+        serde_json::json!({
+            "hooks": {
+                "SessionStart": [
+                    {"matcher": "startup|resume|clear",
+                     "hooks": [{"type": "command", "command": "damask briefing"}]}
+                ],
+                "Stop": [
+                    {"hooks": [{"type": "command", "command": "damask harvest"}]}
+                ]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated SessionStart hook"));
+
+    let settings = fs::read_to_string(dir.path().join(".claude/settings.json")).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&settings).unwrap();
+
+    let session_start = doc["hooks"]["SessionStart"].as_array().unwrap();
+    assert_eq!(session_start.len(), 1, "upgrade must not duplicate the entry");
+    let cmd = session_start[0]["hooks"][0]["command"].as_str().unwrap();
+    assert!(cmd.contains("command -v damask") && cmd.contains("damask briefing"));
+    assert_eq!(
+        session_start[0]["matcher"], "startup|resume|clear",
+        "existing matcher must be preserved"
+    );
+
+    let stop = doc["hooks"]["Stop"].as_array().unwrap();
+    assert_eq!(stop.len(), 1);
+    let cmd = stop[0]["hooks"][0]["command"].as_str().unwrap();
+    assert!(cmd.contains("command -v damask") && cmd.contains("damask harvest"));
+}
+
+#[test]
+fn init_writes_union_merge_gitattributes() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    let attrs = fs::read_to_string(dir.path().join(".damask/.gitattributes")).unwrap();
+    assert!(attrs.contains("edges/*.jsonl merge=union"));
+}
+
+#[test]
+fn writes_are_stamped_with_ambient_provenance() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    damask()
+        .args(["record", "a.rs", "1", "1", "risk", r#"{"summary":"x","confidence":0.9}"#])
+        .env("DAMASK_AGENT", "test-agent")
+        .env("DAMASK_SESSION", "sess-42")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let log = fs::read_to_string(dir.path().join(".damask/edges/test.jsonl")).unwrap();
+    assert!(log.contains("\"agent\":\"test-agent\""), "agent should be stamped");
+    assert!(log.contains("\"session\":\"sess-42\""), "session should be stamped");
+}
+
+#[test]
+fn claude_code_sessions_stamp_and_count_endorsements_distinctly() {
+    // Claude Code exports CLAUDE_CODE_SESSION_ID. Endorsements from two
+    // distinct sessions must stamp distinct provenance and count as 2 —
+    // not collapse to 1 via the agent-only COALESCE fallback.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("test.rs"), "fn foo() {}\n").unwrap();
+
+    let output = damask()
+        .args(["--format", "json", "span", "test.rs", "1", "1"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let span: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let span_id = span["id"].as_str().unwrap();
+
+    let output = damask()
+        .args([
+            "--format",
+            "json",
+            "edge",
+            span_id,
+            "_",
+            "risk",
+            r#"{"summary":"A risk","confidence":0.9}"#,
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let edge: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let edge_id = edge["id"].as_str().unwrap();
+
+    // Two endorsements from two distinct ambient Claude Code sessions.
+    // DAMASK_*/legacy vars are removed so the ambient fallback is what's
+    // exercised, hermetically, even when the test itself runs under Claude.
+    for sess in ["sess-a", "sess-b"] {
+        damask()
+            .args(["endorse", edge_id, r#"{"summary":"confirmed"}"#])
+            .env_remove("DAMASK_AGENT")
+            .env_remove("DAMASK_SESSION")
+            .env_remove("CLAUDE_SESSION_ID")
+            .env("CLAUDE_CODE_SESSION_ID", sess)
+            .current_dir(dir.path())
+            .assert()
+            .success();
+    }
+
+    let jsonl = fs::read_to_string(dir.path().join(".damask/edges/test.jsonl")).unwrap();
+    assert!(
+        jsonl.contains("\"session\":\"sess-a\"") && jsonl.contains("\"session\":\"sess-b\""),
+        "ambient CLAUDE_CODE_SESSION_ID should stamp each endorsement"
+    );
+
+    let output = damask()
+        .args(["--format", "json", "at", "test.rs"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let at: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let edges = at["edges"].as_array().expect("at json has edges");
+    let risk = edges
+        .iter()
+        .find(|e| e["rel"] == "risk")
+        .expect("risk edge present");
+    assert_eq!(
+        risk["endorsements"], 2,
+        "two sessions must count as two endorsements, not collapse to one"
+    );
+}
+
+#[test]
+fn peek_file_mode_injects_and_session_dedups() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("auth.rs"), "fn validate() {}\n").unwrap();
+    damask()
+        .args([
+            "record", "auth.rs", "1", "1", "risk",
+            r#"{"summary":"No expiry check","confidence":0.9}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // First peek injects.
+    damask()
+        .args(["peek", "--file", "auth.rs", "--session", "s1"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No expiry check"));
+
+    // Same session: already seen, silence.
+    damask()
+        .args(["peek", "--file", "auth.rs", "--session", "s1"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    // Different session: injected again.
+    damask()
+        .args(["peek", "--file", "auth.rs", "--session", "s2"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No expiry check"));
+}
+
+#[test]
+fn peek_posttooluse_hook_emits_additional_context() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("auth.rs"), "fn validate() {}\n").unwrap();
+    damask()
+        .args([
+            "record", "auth.rs", "1", "1", "gotcha",
+            r#"{"summary":"Validation skipped when cfg missing","confidence":0.85}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let root = dir.path().canonicalize().unwrap();
+    let hook_input = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "s1",
+        "tool_name": "Edit",
+        "tool_input": {"file_path": root.join("auth.rs").to_string_lossy()},
+    })
+    .to_string();
+
+    let output = damask()
+        .arg("peek")
+        .current_dir(dir.path())
+        .write_stdin(hook_input)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(doc["hookSpecificOutput"]["hookEventName"], "PostToolUse");
+    assert!(doc["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .contains("Validation skipped"));
+}
+
+#[test]
+fn peek_prompt_mode_matches_keywords() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("auth.rs"), "fn validate() {}\n").unwrap();
+    damask()
+        .args([
+            "record", "auth.rs", "1", "1", "risk",
+            r#"{"summary":"Token expiry never validated","confidence":0.9}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    damask()
+        .args(["peek", "--prompt", "please fix the token expiry bug"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Token expiry never validated"));
+
+    // Unrelated prompt: silence.
+    damask()
+        .args(["peek", "--prompt", "refactor the frontend carousel widget"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn peek_ignores_non_file_tools_and_fails_open() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    let hook_input = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": "s1",
+        "tool_name": "Bash",
+        "tool_input": {"command": "ls"},
+    })
+    .to_string();
+    damask()
+        .arg("peek")
+        .current_dir(dir.path())
+        .write_stdin(hook_input)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    damask()
+        .arg("peek")
+        .current_dir(dir.path())
+        .write_stdin("garbage")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn verify_runs_checks_and_auto_records_once() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    damask()
+        .args([
+            "record", "a.rs", "1", "1", "risk",
+            r#"{"summary":"holds","confidence":0.9,"check":"true"}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    damask()
+        .args([
+            "record", "a.rs", "1", "1", "risk",
+            r#"{"summary":"broken","confidence":0.9,"check":"false"}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Plain verify: reports both, exits non-zero because one fails.
+    damask()
+        .arg("verify")
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("1/2 checks passed"));
+
+    // --auto: endorses the pass, disputes the failure.
+    damask()
+        .args(["verify", "--auto"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("endorsed"))
+        .stdout(predicate::str::contains("disputed"));
+
+    // Idempotent: outcomes recorded at most once per kind.
+    damask()
+        .args(["verify", "--auto"])
+        .current_dir(dir.path())
+        .assert()
+        .failure();
+    let log = fs::read_to_string(dir.path().join(".damask/edges/test.jsonl")).unwrap();
+    let auto_count = log.matches("\"check_auto\":true").count();
+    assert_eq!(auto_count, 2, "one auto-endorsement and one auto-dispute, no duplicates");
+}
+
+#[test]
+fn harvest_quality_nudge_on_deficient_session_edges() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    // A session-new edge with fields but no summary → lint error.
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    damask()
+        .args(["record", "a.rs", "1", "1", "risk", r#"{"confidence":0.4}"#])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let root = dir.path().canonicalize().unwrap();
+    let transcript = root.join("transcript.jsonl");
+    let line = serde_json::json!({
+        "type": "assistant",
+        "timestamp": "2020-01-01T00:00:00.000Z",
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash",
+             "input": {"command": "damask record a.rs 1 1 risk '{}'"}}
+        ]}
+    });
+    fs::write(&transcript, format!("{line}\n")).unwrap();
+
+    let output = damask()
+        .args(["harvest", "--transcript", &transcript.to_string_lossy()])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(doc["decision"], "block");
+    assert!(doc["reason"]
+        .as_str()
+        .unwrap()
+        .contains("quality problems"));
+}
+
+#[test]
+fn briefing_surfaces_suspect_spans() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn original() {}\nfn other() {}\n").unwrap();
+    damask()
+        .args([
+            "record", "a.rs", "1", "1", "risk",
+            r#"{"summary":"original is risky","confidence":0.9}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Rewrite the annotated line so the content hash no longer matches.
+    fs::write(dir.path().join("a.rs"), "fn rewritten_completely() {}\nfn other() {}\n").unwrap();
+
+    damask()
+        .arg("briefing")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Suspect annotations"));
+}
+
+#[test]
+fn search_where_filters_and_ranks() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    damask()
+        .args([
+            "record", "a.rs", "1", "1", "risk",
+            r#"{"summary":"timeout risk high confidence","confidence":0.95}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    damask()
+        .args([
+            "record", "a.rs", "1", "1", "risk",
+            r#"{"summary":"timeout risk low confidence","confidence":0.3}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    damask()
+        .args(["search", "timeout", "--where", "confidence>=0.9"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("high confidence"))
+        .stdout(predicate::str::contains("low confidence").not());
+
+    // Without the filter, ranking puts high confidence first.
+    let output = damask()
+        .args(["search", "timeout"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    let high_pos = text.find("high confidence").unwrap();
+    let low_pos = text.find("low confidence").unwrap();
+    assert!(high_pos < low_pos, "higher-quality edge should rank first");
+}
+
+#[test]
+fn enrich_annotates_piped_results() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("auth.rs"), "fn validate() {}\nfn other() {}\n").unwrap();
+    damask()
+        .args([
+            "record", "auth.rs", "1", "1", "risk",
+            r#"{"summary":"expiry unchecked","confidence":0.9}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let root = dir.path().canonicalize().unwrap();
+    // ck --jsonl shape, overlapping the annotated line.
+    let input = serde_json::json!({
+        "path": root.join("auth.rs").to_string_lossy(),
+        "span": {"byte_start": 0, "byte_end": 10, "line_start": 1, "line_end": 2},
+        "score": 0.8
+    })
+    .to_string();
+
+    damask()
+        .arg("enrich")
+        .current_dir(dir.path())
+        .write_stdin(input.clone())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("expiry unchecked"));
+
+    // JSON mode: augmented passthrough with a "damask" key; junk lines pass through.
+    let output = damask()
+        .args(["enrich", "--format", "json"])
+        .current_dir(dir.path())
+        .write_stdin(format!("{input}\nnot json\n"))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    let mut lines = text.lines();
+    let augmented: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    assert_eq!(augmented["score"], 0.8, "original fields preserved");
+    assert!(
+        augmented["damask"]["edges"][0]["payload"]["summary"]
+            .as_str()
+            .unwrap()
+            .contains("expiry"),
+        "damask annotations attached"
+    );
+    assert_eq!(lines.next().unwrap(), "not json", "junk passes through untouched");
+}
+
+#[test]
+fn enrich_results_outside_annotated_range_get_nothing() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("auth.rs"), "fn a() {}\nfn b() {}\nfn c() {}\n").unwrap();
+    damask()
+        .args(["record", "auth.rs", "1", "1", "risk", r#"{"summary":"x","confidence":0.9}"#])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let root = dir.path().canonicalize().unwrap();
+    let input = serde_json::json!({
+        "path": root.join("auth.rs").to_string_lossy(),
+        "span": {"line_start": 3, "line_end": 3}
+    })
+    .to_string();
+
+    damask()
+        .arg("enrich")
+        .current_dir(dir.path())
+        .write_stdin(input)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no damask annotations"));
+}
+
+#[test]
+fn search_sem_falls_back_without_ck() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    damask()
+        .args(["record", "a.rs", "1", "1", "risk", r#"{"summary":"timeout bug","confidence":0.9}"#])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Restrict PATH so ck (in ~/.cargo/bin) is invisible: --sem must fall
+    // back to keyword search with a hint, not fail.
+    damask()
+        .args(["search", "timeout", "--sem"])
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("timeout bug"))
+        .stdout(predicate::str::contains("keyword"))
+        .stderr(predicate::str::contains("ck"));
+}
+
+/// Gated end-to-end semantic test: run with DAMASK_TEST_CK=1 when ck is
+/// installed and its embedding model is cached.
+#[test]
+fn search_sem_uses_ck_when_available() {
+    if std::env::var("DAMASK_TEST_CK").as_deref() != Ok("1") {
+        eprintln!("skipped (set DAMASK_TEST_CK=1 to run)");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    damask()
+        .args([
+            "record", "a.rs", "1", "1", "risk",
+            r#"{"summary":"credentials are not validated before use","confidence":0.9}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    damask()
+        .args(["search", "authentication checks missing", "--sem"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("semantic"))
+        .stdout(predicate::str::contains("credentials"));
+}
+
+#[test]
+fn batch_bad_endpoint_error_teaches_syntax() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    let batch = serde_json::json!([
+        {"span": {"path": "a.rs", "start": 1, "end": 1}},
+        {"edge": {"from": "record", "to": "findings", "rel": "depends_on",
+                  "payload": {"summary": "x"}}}
+    ])
+    .to_string();
+
+    let output = damask()
+        .args(["batch", "--stdin"])
+        .current_dir(dir.path())
+        .write_stdin(batch)
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let err = String::from_utf8(output).unwrap();
+    assert!(err.contains("\"record\" is not a valid endpoint"), "names the bad value: {err}");
+    assert!(err.contains("$N"), "teaches back-reference syntax");
+    assert!(err.contains("help batch"), "points to the reference");
+}
+
+#[test]
+fn init_skill_sync_is_idempotent_and_self_healing() {
+    let dir = TempDir::new().unwrap();
+
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Created .claude/skills/damask/SKILL.md"));
+
+    // Unchanged: no rewrite.
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already current"));
+
+    // Stale/corrupted copy: refreshed.
+    let skill_path = dir.path().join(".claude/skills/damask/SKILL.md");
+    fs::write(&skill_path, "# Damask\ncorrupted old copy\n").unwrap();
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated .claude/skills/damask/SKILL.md"));
+    let restored = fs::read_to_string(&skill_path).unwrap();
+    assert!(restored.contains("## Workflow"), "canonical content restored");
+}
+
+#[test]
+fn briefing_warns_when_installed_skill_is_stale() {
+    let dir = TempDir::new().unwrap();
+
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    fs::write(
+        dir.path().join(".claude/skills/damask/SKILL.md"),
+        "# Damask\nstale\n",
+    )
+    .unwrap();
+
+    damask()
+        .arg("briefing")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("out of date"))
+        .stdout(predicate::str::contains("damask init --claude"));
+}
+
+#[test]
+fn review_markdown_is_pr_ready() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    damask()
+        .args([
+            "record", "a.rs", "1", "1", "risk",
+            r#"{"summary":"needs review","confidence":0.9,"action":"check it"}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    damask()
+        .args(["review", "--markdown"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("## Damask review"))
+        .stdout(predicate::str::contains("**risk**"))
+        .stdout(predicate::str::contains("needs review"))
+        .stdout(predicate::str::contains("action: check it"));
+}
+
+#[test]
+fn briefing_outside_project_is_silent() {
+    let dir = TempDir::new().unwrap();
+
+    damask()
+        .arg("briefing")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn briefing_cold_start_message() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    damask()
+        .arg("briefing")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cold start"))
+        .stdout(predicate::str::contains("damask help cold-start"));
+}
+
+#[test]
+fn briefing_warm_shows_findings() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("auth.rs"), "fn validate() {}\n").unwrap();
+    damask()
+        .args([
+            "record",
+            "auth.rs",
+            "1",
+            "1",
+            "risk",
+            r#"{"summary":"No token expiry check","confidence":0.9}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    damask()
+        .arg("briefing")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Damask knowledge graph"))
+        .stdout(predicate::str::contains("### risk (1)"))
+        .stdout(predicate::str::contains("No token expiry check"))
+        .stdout(predicate::str::contains("damask at <file>[:line]"));
+}
+
+#[test]
+fn briefing_json_wraps_session_start_hook_output() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    let output = damask()
+        .args(["briefing", "--format", "json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(doc["hookSpecificOutput"]["hookEventName"], "SessionStart");
+    assert!(doc["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap()
+        .contains("cold start"));
+}
+
+/// Build a minimal Claude Code transcript line for a tool_use.
+fn transcript_tool_use(name: &str, input: serde_json::Value) -> String {
+    serde_json::json!({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "name": name, "input": input}]
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn harvest_blocks_when_edits_unrecorded() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    // Transcript paths must match the project root as the CLI resolves it
+    // (macOS tempdirs are symlinked), so canonicalize.
+    let root = dir.path().canonicalize().unwrap();
+    fs::write(root.join("auth.rs"), "fn validate() {}\n").unwrap();
+    let transcript = root.join("transcript.jsonl");
+    fs::write(
+        &transcript,
+        transcript_tool_use(
+            "Edit",
+            serde_json::json!({"file_path": root.join("auth.rs").to_string_lossy()}),
+        ) + "\n",
+    )
+    .unwrap();
+
+    let output = damask()
+        .args(["harvest", "--transcript", &transcript.to_string_lossy()])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(doc["decision"], "block");
+    let reason = doc["reason"].as_str().unwrap();
+    assert!(reason.contains("auth.rs"), "reason should list edited file");
+    assert!(reason.contains("damask record"), "reason should show how to record");
+}
+
+#[test]
+fn harvest_allows_when_findings_recorded() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    let root = dir.path().canonicalize().unwrap();
+    let transcript = root.join("transcript.jsonl");
+    fs::write(
+        &transcript,
+        [
+            transcript_tool_use(
+                "Edit",
+                serde_json::json!({"file_path": root.join("auth.rs").to_string_lossy()}),
+            ),
+            transcript_tool_use(
+                "Bash",
+                serde_json::json!({"command": "damask record auth.rs 1 1 risk '{}'"}),
+            ),
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+
+    damask()
+        .args(["harvest", "--transcript", &transcript.to_string_lossy()])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn harvest_allows_readonly_sessions() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    let root = dir.path().canonicalize().unwrap();
+    let transcript = root.join("transcript.jsonl");
+    fs::write(
+        &transcript,
+        transcript_tool_use("Bash", serde_json::json!({"command": "cargo test"})) + "\n",
+    )
+    .unwrap();
+
+    damask()
+        .args(["harvest", "--transcript", &transcript.to_string_lossy()])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn harvest_reads_hook_json_from_stdin() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    let root = dir.path().canonicalize().unwrap();
+    fs::write(root.join("auth.rs"), "fn validate() {}\n").unwrap();
+    let transcript = root.join("transcript.jsonl");
+    fs::write(
+        &transcript,
+        transcript_tool_use(
+            "Edit",
+            serde_json::json!({"file_path": root.join("auth.rs").to_string_lossy()}),
+        ) + "\n",
+    )
+    .unwrap();
+
+    let hook_input = serde_json::json!({
+        "session_id": "test",
+        "transcript_path": transcript.to_string_lossy(),
+        "stop_hook_active": false,
+    })
+    .to_string();
+
+    damask()
+        .arg("harvest")
+        .current_dir(dir.path())
+        .write_stdin(hook_input)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"decision\":\"block\""));
+}
+
+#[test]
+fn harvest_never_blocks_twice() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+
+    let root = dir.path().canonicalize().unwrap();
+    let transcript = root.join("transcript.jsonl");
+    fs::write(
+        &transcript,
+        transcript_tool_use(
+            "Edit",
+            serde_json::json!({"file_path": root.join("auth.rs").to_string_lossy()}),
+        ) + "\n",
+    )
+    .unwrap();
+
+    let hook_input = serde_json::json!({
+        "session_id": "test",
+        "transcript_path": transcript.to_string_lossy(),
+        "stop_hook_active": true,
+    })
+    .to_string();
+
+    damask()
+        .arg("harvest")
+        .current_dir(dir.path())
+        .write_stdin(hook_input)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn harvest_outside_project_is_silent() {
+    let dir = TempDir::new().unwrap();
+
+    damask()
+        .arg("harvest")
+        .current_dir(dir.path())
+        .write_stdin("not even json")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
 }
 
 #[test]
@@ -1895,7 +2935,7 @@ fn init_codex_idempotent() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("already exists"));
+        .stdout(predicate::str::contains("already current"));
 
     // Verify # Damask appears exactly once
     let content = fs::read_to_string(dir.path().join(".agents/skills/damask/SKILL.md")).unwrap();

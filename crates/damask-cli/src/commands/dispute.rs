@@ -9,9 +9,9 @@ use crate::error::Result;
 /// Map a reason template name to a JSON payload.
 fn reason_to_payload(reason: &str) -> serde_json::Value {
     match reason {
-        "mitigated" => serde_json::json!({"summary": "Mitigated — the underlying issue has been addressed"}),
-        "stale" => serde_json::json!({"summary": "Stale — the code or context this edge references has changed significantly"}),
-        "false-positive" => serde_json::json!({"summary": "False positive — investigation determined this is not an actual issue"}),
+        "resolved" => serde_json::json!({"summary": "Resolved — the underlying issue has been addressed"}),
+        "outdated" => serde_json::json!({"summary": "Outdated — the context this edge references has changed significantly"}),
+        "incorrect" => serde_json::json!({"summary": "Incorrect — investigation determined this is not accurate"}),
         "duplicate" => serde_json::json!({"summary": "Duplicate — this finding is covered by another edge"}),
         _ => serde_json::json!({"summary": format!("Disputed: {reason}")}),
     }
@@ -83,8 +83,8 @@ pub fn run(
                 payload: payload_value.clone(),
                 ns: ns.clone(),
                 ts: chrono::Utc::now(),
-                agent: None,
-                session: None,
+                agent: super::helpers::ambient_agent(),
+                session: super::helpers::ambient_session(),
             };
             facts.push(Fact::Edge(edge));
         }
@@ -113,8 +113,8 @@ pub fn run(
             payload: payload_value,
             ns: ns.clone(),
             ts: chrono::Utc::now(),
-            agent: None,
-            session: None,
+            agent: super::helpers::ambient_agent(),
+            session: super::helpers::ambient_session(),
         };
 
         let fact = Fact::Edge(edge.clone());

@@ -36,7 +36,21 @@ pub fn compute_active_state(conn: &Connection) -> Result<(), StoreError> {
     // Meta edges are never shown in `at` output — mark them as inactive for display purposes.
     conn.execute(
         "UPDATE edges SET is_active = 0
-         WHERE rel IN ('supersedes', 'invalidates', 'endorsed', 'disputed')",
+         WHERE rel IN ('supersedes', 'invalidates', 'endorsed', 'disputed', 'closed')",
+        [],
+    )
+    .map_err(|e| StoreError::Io(e.to_string()))?;
+
+    // Compute is_closed: edges targeted by a 'closed' meta-edge.
+    // Reset first, then mark.
+    conn.execute("UPDATE edges SET is_closed = 0", [])
+        .map_err(|e| StoreError::Io(e.to_string()))?;
+    conn.execute(
+        "UPDATE edges SET is_closed = 1
+         WHERE id IN (
+             SELECT DISTINCT from_id FROM edges
+             WHERE rel = 'closed' AND from_id IS NOT NULL
+         )",
         [],
     )
     .map_err(|e| StoreError::Io(e.to_string()))?;
@@ -157,5 +171,47 @@ mod tests {
 
         assert!(content_active);
         assert!(!endorse_active, "meta edges should not be active");
+    }
+
+    #[test]
+    fn closed_when_close_meta_edge_exists() {
+        let conn = setup_db();
+        insert_edge(&conn, "e_1", Some("s_1"), None, "risk");
+        // Close meta-edge: from_id = target edge, to_id = null
+        insert_edge(&conn, "e_close", Some("e_1"), None, "closed");
+
+        compute_active_state(&conn).unwrap();
+
+        let is_closed: bool = conn
+            .query_row("SELECT is_closed FROM edges WHERE id = 'e_1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(is_closed, "edge should be marked closed");
+
+        // The close meta-edge itself should be inactive
+        let close_active: bool = conn
+            .query_row(
+                "SELECT is_active FROM edges WHERE id = 'e_close'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!close_active, "close meta-edge should be inactive");
+    }
+
+    #[test]
+    fn not_closed_without_close_edge() {
+        let conn = setup_db();
+        insert_edge(&conn, "e_1", Some("s_1"), None, "risk");
+
+        compute_active_state(&conn).unwrap();
+
+        let is_closed: bool = conn
+            .query_row("SELECT is_closed FROM edges WHERE id = 'e_1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert!(!is_closed, "edge should not be closed without close edge");
     }
 }

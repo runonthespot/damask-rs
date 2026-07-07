@@ -16,6 +16,7 @@ pub struct EdgeRow {
     pub ts: String,
     pub agent: Option<String>,
     pub is_active: bool,
+    pub is_closed: bool,
 }
 
 /// A row from the spans table.
@@ -39,10 +40,10 @@ pub struct SpanRow {
 const SPAN_COLS: &str = "id, path, line_start, line_end, snippet, symbol, content_hash, [commit], ns, ts, resolution, recency";
 
 /// Column list for edge SELECT queries.
-const EDGE_COLS: &str = "id, from_id, to_id, rel, payload, ns, ts, agent, is_active";
+const EDGE_COLS: &str = "id, from_id, to_id, rel, payload, ns, ts, agent, is_active, is_closed";
 
 /// Table-qualified edge columns for JOIN contexts (avoids ambiguity with FTS payload column).
-const EDGE_COLS_Q: &str = "edges.id, edges.from_id, edges.to_id, edges.rel, edges.payload, edges.ns, edges.ts, edges.agent, edges.is_active";
+const EDGE_COLS_Q: &str = "edges.id, edges.from_id, edges.to_id, edges.rel, edges.payload, edges.ns, edges.ts, edges.agent, edges.is_active, edges.is_closed";
 
 /// Map a rusqlite row to a SpanRow (columns must match SPAN_COLS order).
 fn row_to_span(row: &Row<'_>) -> rusqlite::Result<SpanRow> {
@@ -74,6 +75,7 @@ fn row_to_edge(row: &Row<'_>) -> rusqlite::Result<EdgeRow> {
         ts: row.get(6)?,
         agent: row.get(7)?,
         is_active: row.get(8)?,
+        is_closed: row.get(9)?,
     })
 }
 
@@ -88,6 +90,14 @@ fn collect_rows<T>(
         result.push(mapper(row).map_err(|e| StoreError::Io(e.to_string()))?);
     }
     Ok(result)
+}
+
+/// Lightweight graph statistics for context blocks.
+#[derive(Debug, Default, Clone)]
+pub struct GraphStats {
+    pub total_edges: u64,
+    pub active_edges: u64,
+    pub closed_edges: u64,
 }
 
 /// Aggregate statistics for `damask status`.
@@ -403,6 +413,103 @@ impl<'a> IndexQuery<'a> {
             .query(param_refs.as_slice())
             .map_err(|e| StoreError::Io(e.to_string()))?;
         collect_rows(rows, row_to_edge)
+    }
+
+    /// Full-text search over edge payloads, excluding closed edges.
+    pub fn search_fts_open(
+        &self,
+        query: &str,
+        ns: Option<&str>,
+        rel: Option<&str>,
+    ) -> Result<Vec<EdgeRow>, StoreError> {
+        let mut sql = format!(
+            "SELECT {EDGE_COLS_Q} FROM edges
+             JOIN edges_fts ON edges.rowid = edges_fts.rowid
+             WHERE edges_fts MATCH ?1 AND edges.is_active = 1 AND edges.is_closed = 0"
+        );
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(query.to_string())];
+        let mut idx = 2;
+
+        if let Some(ns_val) = ns {
+            sql.push_str(&format!(" AND edges.ns = ?{idx}"));
+            params.push(Box::new(ns_val.to_string()));
+            idx += 1;
+        }
+        if let Some(rel_val) = rel {
+            sql.push_str(&format!(" AND edges.rel = ?{idx}"));
+            params.push(Box::new(rel_val.to_string()));
+        }
+
+        sql.push_str(" ORDER BY rank");
+
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query(param_refs.as_slice())
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        collect_rows(rows, row_to_edge)
+    }
+
+    /// Return all active, non-closed content edges.
+    pub fn all_active_open_edges(&self) -> Result<Vec<EdgeRow>, StoreError> {
+        self.all_active_open_edges_ns(None)
+    }
+
+    /// Return all active, non-closed content edges in the given namespace (or all if None).
+    pub fn all_active_open_edges_ns(&self, ns: Option<&str>) -> Result<Vec<EdgeRow>, StoreError> {
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match ns {
+            Some(ns) => (
+                format!("SELECT {EDGE_COLS} FROM edges WHERE is_active = 1 AND is_closed = 0 AND ns = ?1"),
+                vec![Box::new(ns.to_string())],
+            ),
+            None => (
+                format!("SELECT {EDGE_COLS} FROM edges WHERE is_active = 1 AND is_closed = 0"),
+                vec![],
+            ),
+        };
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query(params_refs.as_slice())
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        collect_rows(rows, row_to_edge)
+    }
+
+    /// Find all active, non-closed edges that reference a given span ID.
+    pub fn edges_for_span_open(&self, span_id: &str) -> Result<Vec<EdgeRow>, StoreError> {
+        let sql = format!(
+            "SELECT {EDGE_COLS} FROM edges
+             WHERE is_active = 1 AND is_closed = 0 AND (from_id = ?1 OR to_id = ?1)"
+        );
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let rows = stmt
+            .query(rusqlite::params![span_id])
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        collect_rows(rows, row_to_edge)
+    }
+
+    /// Lightweight graph statistics for context blocks.
+    pub fn graph_stats(&self) -> Result<GraphStats, StoreError> {
+        let count = |sql: &str| -> Result<u64, StoreError> {
+            self.conn
+                .query_row(sql, [], |row| row.get(0))
+                .map_err(|e| StoreError::Io(e.to_string()))
+        };
+
+        Ok(GraphStats {
+            total_edges: count("SELECT COUNT(*) FROM edges")?,
+            active_edges: count("SELECT COUNT(*) FROM edges WHERE is_active = 1")?,
+            closed_edges: count("SELECT COUNT(*) FROM edges WHERE is_closed = 1")?,
+        })
     }
 
     /// Return namespace-level statistics: edge count, last modified, endorsement/dispute counts.
@@ -874,5 +981,66 @@ mod tests {
         assert_eq!(endorsed.len(), 1, "should find endorsement via from_id");
         assert_eq!(disputed.len(), 1, "should find dispute via from_id");
         assert_eq!(superseded.len(), 1, "should find supersedes via to_id");
+    }
+
+    #[test]
+    fn active_open_excludes_closed() {
+        let conn = setup_db();
+        insert_edge(&conn, "e_1", Some("s_1"), None, "risk");
+        insert_edge(&conn, "e_2", Some("s_1"), None, "risk");
+
+        // Mark e_2 as closed
+        conn.execute("UPDATE edges SET is_closed = 1 WHERE id = 'e_2'", [])
+            .unwrap();
+
+        let q = IndexQuery::new(&conn);
+        let open = q.all_active_open_edges().unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, "e_1");
+
+        // all_active_edges still includes closed
+        let all = q.all_active_edges().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn edges_for_span_open_excludes_closed() {
+        let conn = setup_db();
+        insert_span(&conn, "s_1", "src/main.rs", 1, 10);
+        insert_edge(&conn, "e_1", Some("s_1"), None, "risk");
+        insert_edge(&conn, "e_2", Some("s_1"), None, "risk");
+
+        // Mark e_2 as closed
+        conn.execute("UPDATE edges SET is_closed = 1 WHERE id = 'e_2'", [])
+            .unwrap();
+
+        let q = IndexQuery::new(&conn);
+        let open = q.edges_for_span_open("s_1").unwrap();
+        assert_eq!(open.len(), 1);
+        assert_eq!(open[0].id, "e_1");
+
+        // edges_for_span still includes closed
+        let all = q.edges_for_span("s_1").unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn graph_stats_counts_closed() {
+        let conn = setup_db();
+        insert_edge(&conn, "e_1", Some("s_1"), None, "risk");
+        insert_edge(&conn, "e_2", Some("s_1"), None, "risk");
+        insert_edge(&conn, "e_3", Some("s_1"), None, "risk");
+
+        // Mark e_3 as closed, e_2 as inactive
+        conn.execute("UPDATE edges SET is_closed = 1 WHERE id = 'e_3'", [])
+            .unwrap();
+        conn.execute("UPDATE edges SET is_active = 0 WHERE id = 'e_2'", [])
+            .unwrap();
+
+        let q = IndexQuery::new(&conn);
+        let stats = q.graph_stats().unwrap();
+        assert_eq!(stats.total_edges, 3);
+        assert_eq!(stats.active_edges, 2); // e_1 + e_3 (closed but still active)
+        assert_eq!(stats.closed_edges, 1);
     }
 }

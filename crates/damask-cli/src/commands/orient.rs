@@ -1,7 +1,8 @@
 use anyhow::Context;
 use damask_core::PayloadEnvelope;
 use damask_store::index::query::EdgeRow;
-use damask_store::{update_index_with_mode, DamaskProject, IndexMode, IndexQuery};
+use damask_store::{update_index_with_mode, DamaskProject, GraphStats, IndexMode, IndexQuery};
+use std::collections::HashMap;
 use std::env;
 
 use crate::error::Result;
@@ -10,29 +11,51 @@ use crate::output::Format;
 /// Maximum edges to show per section in human output.
 const SECTION_LIMIT: usize = 5;
 
-struct OrientData {
-    active_ns: String,
-    namespace_count: usize,
-    span_count: u64,
-    edge_count: u64,
-    active_edge_count: u64,
-    endorsement_count: u64,
-    dispute_count: u64,
-    namespaces: Vec<(String, u64, Option<String>)>, // (name, edge_count, last_modified)
-    risks: Vec<EdgeSummary>,
-    gotchas: Vec<EdgeSummary>,
-    decisions: Vec<EdgeSummary>,
-    invariants: Vec<EdgeSummary>,
-    recent: Vec<EdgeSummary>,
+pub(crate) struct OrientData {
+    pub(crate) active_ns: String,
+    pub(crate) namespace_count: usize,
+    pub(crate) span_count: u64,
+    pub(crate) edge_count: u64,
+    pub(crate) active_edge_count: u64,
+    pub(crate) endorsement_count: u64,
+    pub(crate) dispute_count: u64,
+    pub(crate) graph_stats: GraphStats,
+    pub(crate) namespaces: Vec<NamespaceInfo>,
+    /// Dynamic sections — one per rel type that has edges, sorted by count descending.
+    pub(crate) sections: Vec<RelSection>,
+    pub(crate) recent: Vec<EdgeSummary>,
+    /// Spans whose anchor drifted (non-exact resolution) or whose file
+    /// changed since annotation — their edges deserve re-confirmation.
+    pub(crate) suspect_spans: Vec<SuspectSpan>,
 }
 
-struct EdgeSummary {
-    id: String,
-    rel: String,
-    summary: String,
-    confidence: Option<f64>,
-    ns: String,
-    ts: String,
+pub(crate) struct SuspectSpan {
+    pub(crate) path: String,
+    pub(crate) lines: Option<(u32, u32)>,
+    pub(crate) resolution: String,
+    pub(crate) recency: String,
+    pub(crate) open_edge_count: usize,
+}
+
+pub(crate) struct RelSection {
+    pub(crate) rel: String,
+    pub(crate) edges: Vec<EdgeSummary>,
+}
+
+pub(crate) struct NamespaceInfo {
+    pub(crate) name: String,
+    pub(crate) edge_count: u64,
+    pub(crate) last_modified: Option<String>,
+    pub(crate) rels: HashMap<String, u32>,
+}
+
+pub(crate) struct EdgeSummary {
+    pub(crate) id: String,
+    pub(crate) rel: String,
+    pub(crate) summary: String,
+    pub(crate) confidence: Option<f64>,
+    pub(crate) ns: String,
+    pub(crate) ts: String,
 }
 
 fn edge_to_summary(edge: &EdgeRow) -> EdgeSummary {
@@ -57,7 +80,7 @@ fn passes_filters(
     edge: &EdgeRow,
     rel_filter: Option<&str>,
     tag_filter: Option<&str>,
-    undisputed: bool,
+    uncontested: bool,
     q: &IndexQuery,
 ) -> bool {
     if let Some(rel) = rel_filter {
@@ -74,7 +97,7 @@ fn passes_filters(
             return false;
         }
     }
-    if undisputed {
+    if uncontested {
         let dispute_count = q.dispute_count(&edge.id).unwrap_or(0);
         if dispute_count > 0 {
             return false;
@@ -83,7 +106,19 @@ fn passes_filters(
     true
 }
 
-pub fn run(format: Format, rel_filter: Option<&str>, tag_filter: Option<&str>, undisputed: bool) -> Result<()> {
+pub fn run(format: Format, rel_filter: Option<&str>, tag_filter: Option<&str>, uncontested: bool, show_closed: bool) -> Result<()> {
+    let data = collect(rel_filter, tag_filter, uncontested, show_closed)?;
+
+    match format {
+        Format::Human => print_human(&data),
+        Format::Json => print_json(&data),
+    }
+
+    Ok(())
+}
+
+/// Gather orientation data from the index. Shared by `orient` and `briefing`.
+pub(crate) fn collect(rel_filter: Option<&str>, tag_filter: Option<&str>, uncontested: bool, show_closed: bool) -> Result<OrientData> {
     let cwd = env::current_dir().context("failed to get current directory")?;
     let project = DamaskProject::discover(&cwd)
         .map_err(|e| anyhow::anyhow!("{}", e))
@@ -96,53 +131,62 @@ pub fn run(format: Format, rel_filter: Option<&str>, tag_filter: Option<&str>, u
 
     let q = IndexQuery::new(&conn);
     let stats = q.project_stats().map_err(|e| anyhow::anyhow!("{}", e))?;
-    let all_edges = q.all_active_edges().map_err(|e| anyhow::anyhow!("{}", e))?;
+    let graph_stats = q.graph_stats().map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let all_edges = if show_closed {
+        q.all_active_edges().map_err(|e| anyhow::anyhow!("{}", e))?
+    } else {
+        q.all_active_open_edges().map_err(|e| anyhow::anyhow!("{}", e))?
+    };
 
     let active_ns = project.active_ns().unwrap_or_default();
     let ns_list = project
         .list_namespaces()
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    // Collect namespace stats
+    // Collect namespace stats with rel breakdown
     let mut namespaces = Vec::new();
     for ns_name in &ns_list {
         let ns_stats = q
             .namespace_stats(ns_name)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
-        namespaces.push((
-            ns_name.clone(),
-            ns_stats.edge_count,
-            ns_stats.last_modified,
-        ));
+
+        // Count edges by rel for this namespace
+        let mut rels: HashMap<String, u32> = HashMap::new();
+        for edge in &all_edges {
+            if edge.ns == *ns_name {
+                *rels.entry(edge.rel.clone()).or_insert(0) += 1;
+            }
+        }
+
+        namespaces.push(NamespaceInfo {
+            name: ns_name.clone(),
+            edge_count: ns_stats.edge_count,
+            last_modified: ns_stats.last_modified,
+            rels,
+        });
     }
 
     // Filter edges before bucketing
-    let has_filters = rel_filter.is_some() || tag_filter.is_some() || undisputed;
+    let has_filters = rel_filter.is_some() || tag_filter.is_some() || uncontested;
     let filtered_edges: Vec<&EdgeRow> = if has_filters {
-        all_edges.iter().filter(|e| passes_filters(e, rel_filter, tag_filter, undisputed, &q)).collect()
+        all_edges.iter().filter(|e| passes_filters(e, rel_filter, tag_filter, uncontested, &q)).collect()
     } else {
         all_edges.iter().collect()
     };
 
-    // Bucket edges by rel type
-    let mut risks = Vec::new();
-    let mut gotchas = Vec::new();
-    let mut decisions = Vec::new();
-    let mut invariants = Vec::new();
-
+    // Group edges by rel type dynamically
+    let mut by_rel: HashMap<String, Vec<EdgeSummary>> = HashMap::new();
     for edge in &filtered_edges {
-        match edge.rel.as_str() {
-            "risk" => risks.push(edge_to_summary(edge)),
-            "gotcha" => gotchas.push(edge_to_summary(edge)),
-            "decision" => decisions.push(edge_to_summary(edge)),
-            "invariant" => invariants.push(edge_to_summary(edge)),
-            _ => {}
-        }
+        by_rel
+            .entry(edge.rel.clone())
+            .or_default()
+            .push(edge_to_summary(edge));
     }
 
-    // Sort by confidence descending
-    for list in [&mut risks, &mut gotchas, &mut decisions, &mut invariants] {
-        list.sort_by(|a, b| {
+    // Sort each group by confidence descending
+    for edges in by_rel.values_mut() {
+        edges.sort_by(|a, b| {
             b.confidence
                 .unwrap_or(0.0)
                 .partial_cmp(&a.confidence.unwrap_or(0.0))
@@ -150,12 +194,51 @@ pub fn run(format: Format, rel_filter: Option<&str>, tag_filter: Option<&str>, u
         });
     }
 
+    // Build sections sorted by edge count descending (largest groups first)
+    let mut sections: Vec<RelSection> = by_rel
+        .into_iter()
+        .map(|(rel, edges)| RelSection { rel, edges })
+        .collect();
+    sections.sort_by(|a, b| b.edges.len().cmp(&a.edges.len()));
+
     // Recent edges: last 5 by timestamp (from filtered set)
     let mut recent: Vec<EdgeSummary> = filtered_edges.iter().map(|e| edge_to_summary(e)).collect();
     recent.sort_by(|a, b| b.ts.cmp(&a.ts));
     recent.truncate(SECTION_LIMIT);
 
-    let data = OrientData {
+    // Suspect spans: drifted anchors or changed files, with open edges
+    // attached — ordered by how much knowledge hangs off them.
+    let mut suspect_spans: Vec<SuspectSpan> = Vec::new();
+    if let Ok(all_spans) = q.all_spans_chronological() {
+        for span in all_spans {
+            let resolution = span.resolution.as_deref().unwrap_or("exact");
+            let recency = span.recency.as_deref().unwrap_or("unknown");
+            let suspect = resolution != "exact" || recency == "file_changed";
+            if !suspect {
+                continue;
+            }
+            let open_edge_count = q
+                .edges_for_span_open(&span.id)
+                .map(|e| e.len())
+                .unwrap_or(0);
+            if open_edge_count == 0 {
+                continue;
+            }
+            suspect_spans.push(SuspectSpan {
+                path: span.path.clone(),
+                lines: match (span.line_start, span.line_end) {
+                    (Some(s), Some(e)) => Some((s, e)),
+                    _ => None,
+                },
+                resolution: resolution.to_string(),
+                recency: recency.to_string(),
+                open_edge_count,
+            });
+        }
+    }
+    suspect_spans.sort_by(|a, b| b.open_edge_count.cmp(&a.open_edge_count));
+
+    Ok(OrientData {
         active_ns,
         namespace_count: ns_list.len(),
         span_count: stats.span_count,
@@ -163,20 +246,12 @@ pub fn run(format: Format, rel_filter: Option<&str>, tag_filter: Option<&str>, u
         active_edge_count: stats.active_edge_count,
         endorsement_count: stats.endorsement_count,
         dispute_count: stats.dispute_count,
+        graph_stats,
         namespaces,
-        risks,
-        gotchas,
-        decisions,
-        invariants,
+        sections,
         recent,
-    };
-
-    match format {
-        Format::Human => print_human(&data),
-        Format::Json => print_json(&data),
-    }
-
-    Ok(())
+        suspect_spans,
+    })
 }
 
 fn print_human(data: &OrientData) {
@@ -199,11 +274,12 @@ fn print_human(data: &OrientData) {
 
     // Status line
     println!(
-        "  {} namespaces | {} spans | {} edges ({} active) | {} endorsements | {} disputes",
+        "  {} namespaces | {} spans | {} edges ({} active, {} closed) | {} endorsements | {} disputes",
         data.namespace_count,
         data.span_count,
         data.edge_count,
         data.active_edge_count,
+        data.graph_stats.closed_edges,
         data.endorsement_count,
         data.dispute_count,
     );
@@ -211,23 +287,34 @@ fn print_human(data: &OrientData) {
         println!("  Active namespace: {}", data.active_ns);
     }
 
-    // Namespaces
+    // Namespaces with rel breakdown
     println!();
     println!("  Namespaces");
-    for (name, count, last_mod) in &data.namespaces {
-        let date = last_mod
+    for ns in &data.namespaces {
+        let date = ns.last_modified
             .as_deref()
             .and_then(|ts| ts.split('T').next())
             .unwrap_or("?");
-        let marker = if *name == data.active_ns { " *" } else { "" };
-        println!("    {name}{marker}  ({count} edges, last: {date})");
+        let marker = if ns.name == data.active_ns { " *" } else { "" };
+
+        // Build rel summary
+        let mut rel_parts: Vec<String> = ns.rels.iter()
+            .map(|(k, v)| format!("{} {}", v, k))
+            .collect();
+        rel_parts.sort();
+        let rel_summary = if rel_parts.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", rel_parts.join(", "))
+        };
+
+        println!("    {}{marker}  ({} edges{rel_summary} — last: {date})", ns.name, ns.edge_count);
     }
 
-    // Sections
-    print_section("Risks", &data.risks);
-    print_section("Gotchas", &data.gotchas);
-    print_section("Decisions", &data.decisions);
-    print_section("Invariants", &data.invariants);
+    // Sections — one per rel type, sorted by count
+    for section in &data.sections {
+        print_section(&section.rel, &section.edges);
+    }
 
     // Recent
     if !data.recent.is_empty() {
@@ -263,9 +350,10 @@ fn print_section(title: &str, edges: &[EdgeSummary]) {
     }
 }
 
-fn summaries_to_json(edges: &[EdgeSummary]) -> Vec<serde_json::Value> {
-    edges
-        .iter()
+fn summaries_to_json(edges: &[EdgeSummary], limit: usize) -> serde_json::Value {
+    let total = edges.len();
+    let shown = total.min(limit);
+    let items: Vec<serde_json::Value> = edges.iter().take(limit)
         .map(|e| {
             serde_json::json!({
                 "id": e.id,
@@ -276,11 +364,46 @@ fn summaries_to_json(edges: &[EdgeSummary]) -> Vec<serde_json::Value> {
                 "ts": e.ts,
             })
         })
-        .collect()
+        .collect();
+
+    serde_json::json!({
+        "total": total,
+        "shown": shown,
+        "edges": items,
+    })
 }
 
 fn print_json(data: &OrientData) {
+    let ns_list: Vec<serde_json::Value> = data.namespaces.iter().map(|ns| {
+        let rels: serde_json::Value = ns.rels.iter()
+            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+            .collect::<serde_json::Map<String, serde_json::Value>>()
+            .into();
+        serde_json::json!({
+            "name": ns.name,
+            "edge_count": ns.edge_count,
+            "last_modified": ns.last_modified,
+            "rels": rels,
+        })
+    }).collect();
+
+    // Build dynamic sections map
+    let mut sections_map = serde_json::Map::new();
+    for section in &data.sections {
+        sections_map.insert(
+            section.rel.clone(),
+            summaries_to_json(&section.edges, SECTION_LIMIT),
+        );
+    }
+
     let output = serde_json::json!({
+        "context": {
+            "graph": {
+                "total_edges": data.graph_stats.total_edges,
+                "active_edges": data.graph_stats.active_edges,
+                "closed_edges": data.graph_stats.closed_edges,
+            },
+        },
         "cold_start": data.active_edge_count == 0,
         "status": {
             "namespaces": data.namespace_count,
@@ -291,18 +414,9 @@ fn print_json(data: &OrientData) {
             "endorsements": data.endorsement_count,
             "disputes": data.dispute_count,
         },
-        "namespace_list": data.namespaces.iter().map(|(name, count, last_mod)| {
-            serde_json::json!({
-                "name": name,
-                "edge_count": count,
-                "last_modified": last_mod,
-            })
-        }).collect::<Vec<_>>(),
-        "risks": summaries_to_json(&data.risks),
-        "gotchas": summaries_to_json(&data.gotchas),
-        "decisions": summaries_to_json(&data.decisions),
-        "invariants": summaries_to_json(&data.invariants),
-        "recent": summaries_to_json(&data.recent),
+        "namespace_list": ns_list,
+        "sections": sections_map,
+        "recent": summaries_to_json(&data.recent, SECTION_LIMIT),
     });
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
 }

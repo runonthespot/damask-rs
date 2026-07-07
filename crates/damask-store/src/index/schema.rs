@@ -38,7 +38,8 @@ pub fn create_schema(conn: &Connection) -> Result<(), StoreError> {
             agent       TEXT,
             session     TEXT,
             source_file TEXT,
-            is_active   INTEGER DEFAULT 1
+            is_active   INTEGER DEFAULT 1,
+            is_closed   INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS index_meta (

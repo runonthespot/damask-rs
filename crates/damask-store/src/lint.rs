@@ -45,11 +45,7 @@ pub fn lint_edges(edges: &[LintInput]) -> Vec<LintIssue> {
             &mut issues,
         );
         check_confidence_floor(&input.edge, &env, &mut issues);
-        check_actionable_without_action(&input.edge, &env, &mut issues);
     }
-
-    // Speed check: flag edges created suspiciously close together
-    check_speed_creation(edges, &mut issues);
 
     issues
 }
@@ -178,25 +174,6 @@ fn check_confidence_floor(edge: &EdgeRow, env: &PayloadEnvelope, issues: &mut Ve
     }
 }
 
-fn check_actionable_without_action(
-    edge: &EdgeRow,
-    env: &PayloadEnvelope,
-    issues: &mut Vec<LintIssue>,
-) {
-    let actionable_rels = ["risk", "gotcha"];
-    if actionable_rels.contains(&edge.rel.as_str()) && env.action().is_none() {
-        issues.push(LintIssue {
-            edge_id: edge.id.clone(),
-            severity: Severity::Warning,
-            rule: "actionable-without-action",
-            message: format!(
-                "[{}] edge type suggests action is needed but no action field provided",
-                edge.rel
-            ),
-        });
-    }
-}
-
 // --- Staleness flags ---
 
 fn check_stale_resolution(edge: &EdgeRow, resolution: Option<&str>, issues: &mut Vec<LintIssue>) {
@@ -227,47 +204,6 @@ fn check_stale_resolution(edge: &EdgeRow, resolution: Option<&str>, issues: &mut
             });
         }
         _ => {}
-    }
-}
-
-// --- Speed check ---
-
-/// Flag edges created suspiciously close together (< 5 seconds apart in same namespace).
-fn check_speed_creation(edges: &[LintInput], issues: &mut Vec<LintIssue>) {
-    // Group by namespace
-    let mut by_ns: std::collections::HashMap<&str, Vec<&EdgeRow>> =
-        std::collections::HashMap::new();
-    for input in edges {
-        by_ns.entry(input.edge.ns.as_str()).or_default().push(&input.edge);
-    }
-
-    for (_ns, mut ns_edges) in by_ns {
-        ns_edges.sort_by(|a, b| a.ts.cmp(&b.ts));
-
-        for window in ns_edges.windows(2) {
-            let (a, b) = (&window[0], &window[1]);
-            // Skip meta edges
-            if vocabulary::is_meta_rel(&a.rel) || vocabulary::is_meta_rel(&b.rel) {
-                continue;
-            }
-            if let (Ok(ta), Ok(tb)) = (
-                chrono::DateTime::parse_from_rfc3339(&a.ts),
-                chrono::DateTime::parse_from_rfc3339(&b.ts),
-            ) {
-                let diff = (tb - ta).num_seconds().unsigned_abs();
-                if diff < 5 {
-                    issues.push(LintIssue {
-                        edge_id: b.id.clone(),
-                        severity: Severity::Warning,
-                        rule: "speed-creation",
-                        message: format!(
-                            "[{}] created {}s after previous edge — possible batch generation",
-                            b.rel, diff
-                        ),
-                    });
-                }
-            }
-        }
     }
 }
 
@@ -302,6 +238,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".to_string(),
             agent: None,
             is_active: true,
+            is_closed: false,
         }
     }
 
@@ -387,30 +324,6 @@ mod tests {
         };
         let issues = lint_edges(&[input]);
         assert!(!issues.iter().any(|i| i.rule == "low-confidence"));
-    }
-
-    #[test]
-    fn flags_actionable_without_action() {
-        let edge = make_edge("e_1", "risk", r#"{"summary":"A risk"}"#);
-        let input = LintInput {
-            edge,
-            span_snippet: None,
-            resolution: None,
-        };
-        let issues = lint_edges(&[input]);
-        assert!(issues.iter().any(|i| i.rule == "actionable-without-action"));
-    }
-
-    #[test]
-    fn actionable_with_action_ok() {
-        let edge = make_edge("e_1", "risk", r#"{"summary":"A risk","action":"Fix it"}"#);
-        let input = LintInput {
-            edge,
-            span_snippet: None,
-            resolution: None,
-        };
-        let issues = lint_edges(&[input]);
-        assert!(!issues.iter().any(|i| i.rule == "actionable-without-action"));
     }
 
     #[test]

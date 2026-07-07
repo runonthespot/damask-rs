@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use damask_core::{PayloadEnvelope, RelClass};
+use damask_core::PayloadEnvelope;
 
 use crate::decay::compute_decay;
 use crate::index::query::EdgeRow;
@@ -31,7 +31,10 @@ pub struct RankingInput {
 }
 
 /// Compute the composite ranking score for an edge.
-/// Implements the 10-signal ranking policy from spec §10.3.
+///
+/// Eight domain-neutral signals — no rel-type or action-field bias.
+/// Edges rank on quality (confidence, completeness, endorsements),
+/// freshness (resolution, recency), and originality (signal density).
 pub fn rank_edge(input: &RankingInput) -> f64 {
     let payload: serde_json::Value =
         serde_json::from_str(&input.edge.payload).unwrap_or(serde_json::json!({}));
@@ -43,17 +46,10 @@ pub fn rank_edge(input: &RankingInput) -> f64 {
     // Signal 2: Confidence
     let confidence_score = env.confidence().unwrap_or(0.5);
 
-    // Signal 3: Actionability — edges with action field rank higher
-    let actionability_score = if env.action().is_some() { 1.0 } else { 0.5 };
-
-    // Signal 4: Rel class
-    let rel_class = RelClass::classify(&input.edge.rel);
-    let rel_class_score = rel_class.rank_weight();
-
-    // Signal 5: Signal density — penalizes restatements of span content
+    // Signal 3: Signal density — penalizes restatements of span content
     let signal_density_score = input.signal_density;
 
-    // Signal 6: Completeness — summary + confidence present
+    // Signal 4: Completeness — summary + confidence present
     let completeness_score = {
         let has_summary = env.summary().is_some();
         let has_confidence = env.confidence().is_some();
@@ -64,38 +60,36 @@ pub fn rank_edge(input: &RankingInput) -> f64 {
         }
     };
 
-    // Signal 7: Endorsement count (logarithmic boost)
+    // Signal 5: Endorsement count (logarithmic boost)
     let endorsement_score = if input.endorsement_count > 0 {
         1.0 + (input.endorsement_count as f64).ln() * 0.3
     } else {
         1.0
     };
 
-    // Signal 8: Dispute signal — disputed edges get penalized
+    // Signal 6: Dispute signal — disputed edges get penalized
     let dispute_score = if input.dispute_count > 0 && input.endorsement_count == 0 {
-        0.3 // disputed with no endorsements = low rank
+        0.3 // disputed with no endorsements
     } else if input.dispute_count > 0 {
-        0.7 // disputed but also endorsed = surface the disagreement
+        0.7 // disputed but also endorsed
     } else {
         1.0
     };
 
-    // Signal 9: Recency decay
+    // Signal 7: Recency decay
     let decay_score = compute_decay(input.effective_ts, input.now, input.half_life_days);
 
-    // Signal 10: Source (local vs community — all local for now)
+    // Signal 8: Source (local vs community — all local for now)
     let source_score = 1.0;
 
-    // Composite score: weighted product
+    // Composite score: weighted sum of domain-neutral signals
     resolution_score * 0.15
-        + confidence_score * 0.15
-        + actionability_score * 0.10
-        + rel_class_score * 0.10
+        + confidence_score * 0.20
         + signal_density_score * 0.05
-        + completeness_score * 0.10
-        + endorsement_score * 0.15
+        + completeness_score * 0.15
+        + endorsement_score * 0.20
         + dispute_score * 0.05
-        + decay_score * 0.10
+        + decay_score * 0.15
         + source_score * 0.05
 }
 
@@ -140,6 +134,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".to_string(),
             agent: None,
             is_active: true,
+            is_closed: false,
         }
     }
 
@@ -167,13 +162,13 @@ mod tests {
     }
 
     #[test]
-    fn judgment_ranks_above_descriptive() {
+    fn rel_class_does_not_affect_rank() {
         let e1 = make_edge("risk", r#"{"summary":"test","confidence":0.8}"#);
         let e2 = make_edge("describes", r#"{"summary":"test","confidence":0.8}"#);
 
         let s1 = rank_edge(&make_input(e1, 0, 0));
         let s2 = rank_edge(&make_input(e2, 0, 0));
-        assert!(s1 > s2);
+        assert!((s1 - s2).abs() < f64::EPSILON, "different rel types with same signals should rank equally");
     }
 
     #[test]
@@ -197,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn actionable_ranks_higher() {
+    fn action_field_does_not_affect_rank() {
         let e1 = make_edge(
             "risk",
             r#"{"summary":"test","confidence":0.8,"action":"fix it"}"#,
@@ -206,7 +201,7 @@ mod tests {
 
         let s1 = rank_edge(&make_input(e1, 0, 0));
         let s2 = rank_edge(&make_input(e2, 0, 0));
-        assert!(s1 > s2);
+        assert!((s1 - s2).abs() < f64::EPSILON, "action field should not affect ranking");
     }
 
     #[test]

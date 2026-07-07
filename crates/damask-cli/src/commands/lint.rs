@@ -83,11 +83,30 @@ pub fn run(format: Format) -> Result<()> {
                 println!("  {} {} [{}]", prefix, issue.message, issue.edge_id);
             }
             println!();
+
+            // Find top issue rule
+            let mut rule_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+            for issue in &issues {
+                *rule_counts.entry(&issue.rule).or_insert(0) += 1;
+            }
+            let top_rule = rule_counts.iter().max_by_key(|(_, c)| **c);
+            let top_hint = if let Some((rule, count)) = top_rule {
+                if *count > 5 {
+                    format!("\n  Top issue: {} ({} warnings)", rule, count)
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
             println!(
-                "  {} issues ({} errors, {} warnings)",
+                "  {} issues ({} errors, {} warnings) across {} edges{}",
                 issues.len(),
                 errors,
-                warnings
+                warnings,
+                inputs.len(),
+                top_hint,
             );
         }
         Format::Json => {

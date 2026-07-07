@@ -1,5 +1,5 @@
 /// Meta-relationship types that operate on edges rather than spans.
-pub const META_RELS: &[&str] = &["supersedes", "invalidates", "endorsed", "disputed"];
+pub const META_RELS: &[&str] = &["supersedes", "invalidates", "endorsed", "disputed", "closed"];
 
 /// Judgment relationship types — edges that represent analysis findings.
 pub const JUDGMENT_RELS: &[&str] = &[
@@ -28,23 +28,23 @@ pub fn is_meta_rel(rel: &str) -> bool {
     META_RELS.contains(&rel)
 }
 
-/// Classification of relationship types for ranking and display.
+/// Classification of relationship types for display grouping.
+/// All content classes rank equally — classification is for organization, not priority.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelClass {
-    /// Judgment rels: risk, gotcha, decision, contradicts, ruled_out, conflicts_with.
-    /// Rank highest in `damask at` output.
+    /// Analytical rels: risk, gotcha, decision, contradicts, ruled_out, conflicts_with.
+    /// Edges that interpret or evaluate.
     Judgment,
 
-    /// Descriptive rels: depends_on, supports, describes, derived_from, etc.
-    /// Rank below judgment rels.
+    /// Factual rels: depends_on, supports, describes, derived_from, etc.
+    /// Edges that document or link.
     Descriptive,
 
-    /// Meta rels: supersedes, invalidates, endorsed, disputed.
-    /// Excluded from `damask at` display (structural, not content).
+    /// Meta rels: supersedes, invalidates, endorsed, disputed, closed.
+    /// Structural edges excluded from content display.
     Meta,
 
     /// Any unrecognized rel type.
-    /// Ranked between judgment and descriptive.
     Other,
 }
 
@@ -67,13 +67,12 @@ impl RelClass {
         META_RELS.contains(&rel)
     }
 
-    /// Ranking weight for this rel class (higher = ranked first).
+    /// Ranking weight for this rel class.
+    /// All content classes rank equally (1.0) — only meta-edges are excluded (0.0).
     pub fn rank_weight(self) -> f64 {
         match self {
-            RelClass::Judgment => 1.0,
-            RelClass::Other => 0.8,
-            RelClass::Descriptive => 0.6,
             RelClass::Meta => 0.0,
+            _ => 1.0,
         }
     }
 }
@@ -121,9 +120,12 @@ mod tests {
     }
 
     #[test]
-    fn rank_weights_ordered() {
-        assert!(RelClass::Judgment.rank_weight() > RelClass::Other.rank_weight());
-        assert!(RelClass::Other.rank_weight() > RelClass::Descriptive.rank_weight());
+    fn rank_weights_content_equal() {
+        // All content classes rank equally
+        assert_eq!(RelClass::Judgment.rank_weight(), RelClass::Other.rank_weight());
+        assert_eq!(RelClass::Other.rank_weight(), RelClass::Descriptive.rank_weight());
+        // Only meta-edges are excluded
         assert!(RelClass::Descriptive.rank_weight() > RelClass::Meta.rank_weight());
+        assert_eq!(RelClass::Meta.rank_weight(), 0.0);
     }
 }

@@ -164,9 +164,17 @@ fn validate_ref(s: &str, current_index: usize, field: &str) -> anyhow::Result<()
         }
         return Ok(());
     }
-    // Literal ID — validate it parses
-    DamaskId::parse(s)
-        .map_err(|e| anyhow::anyhow!("batch[{current_index}].{field}: {e}"))?;
+    // Literal ID — validate it parses. Spell out the accepted forms:
+    // agents working from garbled examples (e.g. "from":"record") must be
+    // able to self-correct from this message alone.
+    DamaskId::parse(s).map_err(|e| {
+        anyhow::anyhow!(
+            "batch[{current_index}].{field}: \"{s}\" is not a valid endpoint ({e}). \
+             Use \"$N\" to reference the fact at index N in this batch, \"_\" for null, \
+             or a literal span/edge ID (s_…/e_…). Example: {{\"edge\": {{\"from\":\"$0\", \
+             \"to\":\"_\", \"rel\":\"risk\", \"payload\":{{…}}}}}}. See `damask help batch`."
+        )
+    })?;
     Ok(())
 }
 

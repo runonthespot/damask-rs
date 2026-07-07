@@ -6,16 +6,31 @@ use std::io::BufRead;
 
 use crate::error::Result;
 
+/// Map a reason template name to a JSON payload.
+fn reason_to_payload(reason: &str) -> serde_json::Value {
+    match reason {
+        "resolved" => serde_json::json!({"summary": "Closed — resolved, the underlying issue has been addressed"}),
+        "outdated" => serde_json::json!({"summary": "Closed — outdated, the context has changed significantly"}),
+        "incorrect" => serde_json::json!({"summary": "Closed — incorrect, investigation determined this is not accurate"}),
+        "duplicate" => serde_json::json!({"summary": "Closed — duplicate, this finding is covered by another edge"}),
+        "accepted" => serde_json::json!({"summary": "Closed — accepted, acknowledged but not changing"}),
+        _ => serde_json::json!({"summary": format!("Closed: {reason}")}),
+    }
+}
+
 pub fn run(
     edge_id: Option<&str>,
     payload: Option<&str>,
+    reason: Option<&str>,
     batch: bool,
     ns_override: Option<&str>,
 ) -> Result<()> {
-    let payload_value = if let Some(json_str) = payload {
-        serde_json::from_str(json_str).context("payload is not valid JSON")?
+    let payload_value = if let Some(reason) = reason {
+        reason_to_payload(reason)
+    } else if let Some(p) = payload {
+        serde_json::from_str(p).context("payload is not valid JSON")?
     } else {
-        serde_json::json!({})
+        serde_json::json!({"summary": "Closed"})
     };
 
     let cwd = env::current_dir().context("failed to get current directory")?;
@@ -40,7 +55,7 @@ pub fn run(
                 continue;
             }
             if !trimmed.starts_with("e_") {
-                anyhow::bail!("can only endorse edges (expected e_ prefix): {trimmed}");
+                anyhow::bail!("can only close edges (expected e_ prefix): {trimmed}");
             }
             DamaskId::parse(&trimmed)
                 .map_err(|e| anyhow::anyhow!("{}", e))
@@ -59,7 +74,7 @@ pub fn run(
                 id: EdgeId::new(),
                 from: Some(target),
                 to: None,
-                rel: "endorsed".to_string(),
+                rel: "closed".to_string(),
                 payload: payload_value.clone(),
                 ns: ns.clone(),
                 ts: chrono::Utc::now(),
@@ -72,13 +87,13 @@ pub fn run(
         let edges_file = project.edges_file(&ns);
         FactWriter::append_all(&edges_file, &facts).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        println!("Endorsed {} edges", edge_ids.len());
+        println!("Closed {} edges", edge_ids.len());
     } else {
         let edge_id =
             edge_id.ok_or_else(|| anyhow::anyhow!("edge_id is required (or use --batch)"))?;
 
         if !edge_id.starts_with("e_") {
-            anyhow::bail!("can only endorse edges (expected e_ prefix): {edge_id}");
+            anyhow::bail!("can only close edges (expected e_ prefix): {edge_id}");
         }
 
         let target = DamaskId::parse(edge_id)
@@ -89,7 +104,7 @@ pub fn run(
             id: EdgeId::new(),
             from: Some(target),
             to: None,
-            rel: "endorsed".to_string(),
+            rel: "closed".to_string(),
             payload: payload_value,
             ns: ns.clone(),
             ts: chrono::Utc::now(),
@@ -101,7 +116,7 @@ pub fn run(
         let edges_file = project.edges_file(&ns);
         FactWriter::append(&edges_file, &fact).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        println!("Endorsed {} ({})", edge_id, edge.id);
+        println!("Closed {} ({})", edge_id, edge.id);
     }
 
     Ok(())

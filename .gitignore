@@ -1,0 +1,6 @@
+.ck/
+target/
+.DS_Store
+.playwright-mcp/
+Archive.zip
+.claude/settings.local.json

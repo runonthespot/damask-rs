@@ -161,14 +161,16 @@ impl Predicate {
             }
             "lifecycle" => {
                 // Computed virtual field based on active state and meta-edge counts
-                let lifecycle = if !edge.is_active {
+                let lifecycle = if edge.is_closed {
+                    "closed"
+                } else if !edge.is_active {
                     "superseded"
                 } else if dispute_count > 0 {
                     "disputed"
                 } else if endorsement_count > 0 {
                     "endorsed"
                 } else {
-                    "untriaged"
+                    "active"
                 };
                 self.compare_str(lifecycle)
             }
@@ -203,7 +205,9 @@ impl Predicate {
 
 /// Check if any predicate in the slice requires inactive edges (e.g. lifecycle=superseded).
 pub fn needs_inactive_edges(preds: &[Predicate]) -> bool {
-    preds.iter().any(|p| p.field == "lifecycle" && p.value == "superseded")
+    preds.iter().any(|p| {
+        p.field == "lifecycle" && (p.value == "superseded" || p.value == "closed")
+    })
 }
 
 #[cfg(test)]
@@ -281,6 +285,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".into(),
             agent: None,
             is_active: true,
+            is_closed: false,
         };
         assert!(p.matches(&edge, 0, 0));
     }
@@ -298,6 +303,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".into(),
             agent: None,
             is_active: true,
+            is_closed: false,
         };
         assert!(p.matches(&edge, 0, 0));
 
@@ -321,6 +327,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".into(),
             agent: None,
             is_active: true,
+            is_closed: false,
         };
         assert!(p.matches(&edge, 3, 0));
         assert!(!p.matches(&edge, 1, 0));
@@ -339,6 +346,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".into(),
             agent: None,
             is_active: true,
+            is_closed: false,
         };
         assert!(p.matches(&edge, 0, 1));
         assert!(!p.matches(&edge, 0, 0));
@@ -357,6 +365,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".into(),
             agent: None,
             is_active: true,
+            is_closed: false,
         };
         assert!(p.matches(&edge, 0, 0));
 
@@ -385,6 +394,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".into(),
             agent: None,
             is_active: true,
+            is_closed: false,
         };
         assert!(p.matches(&edge, 0, 0));
 
@@ -405,6 +415,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".into(),
             agent: None,
             is_active: true,
+            is_closed: false,
         };
         assert!(p.matches(&edge, 0, 0));
 
@@ -430,8 +441,8 @@ mod tests {
     }
 
     #[test]
-    fn matches_lifecycle_untriaged() {
-        let p = Predicate::parse("lifecycle=untriaged").unwrap();
+    fn matches_lifecycle_active() {
+        let p = Predicate::parse("lifecycle=active").unwrap();
         let edge = EdgeRow {
             id: "e_1".into(),
             from_id: None,
@@ -442,10 +453,11 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".into(),
             agent: None,
             is_active: true,
+            is_closed: false,
         };
-        // Active, 0 endorsements, 0 disputes => untriaged
+        // Active, 0 endorsements, 0 disputes => active
         assert!(p.matches(&edge, 0, 0));
-        // With endorsements => not untriaged
+        // With endorsements => not active (it's endorsed)
         assert!(!p.matches(&edge, 1, 0));
     }
 
@@ -462,6 +474,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".into(),
             agent: None,
             is_active: true,
+            is_closed: false,
         };
         assert!(p.matches(&edge, 2, 0));
         assert!(!p.matches(&edge, 0, 0));
@@ -480,6 +493,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".into(),
             agent: None,
             is_active: true,
+            is_closed: false,
         };
         assert!(p.matches(&edge, 0, 1));
         assert!(!p.matches(&edge, 0, 0));
@@ -498,6 +512,7 @@ mod tests {
             ts: "2025-01-01T00:00:00Z".into(),
             agent: None,
             is_active: true,
+            is_closed: false,
         };
         let inactive_edge = EdgeRow {
             is_active: false,
@@ -517,7 +532,7 @@ mod tests {
 
         let preds = vec![
             Predicate::parse("rel=risk").unwrap(),
-            Predicate::parse("lifecycle=untriaged").unwrap(),
+            Predicate::parse("lifecycle=active").unwrap(),
         ];
         assert!(!super::needs_inactive_edges(&preds));
     }

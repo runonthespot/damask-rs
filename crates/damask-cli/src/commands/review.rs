@@ -9,7 +9,7 @@ use std::env;
 use crate::error::Result;
 use crate::output::Format;
 
-pub fn run(format: Format) -> Result<()> {
+pub fn run(format: Format, markdown: bool) -> Result<()> {
     let cwd = env::current_dir().context("failed to get current directory")?;
     let project = DamaskProject::discover(&cwd)
         .map_err(|e| anyhow::anyhow!("{}", e))
@@ -41,10 +41,29 @@ pub fn run(format: Format) -> Result<()> {
         edges
     };
 
+    let graph_stats = q.graph_stats().map_err(|e| anyhow::anyhow!("{}", e))?;
+
     if recent_edges.is_empty() {
+        if markdown {
+            println!("_No new damask annotations since the last commit._");
+            return Ok(());
+        }
         match format {
             Format::Human => println!("No new edges to review."),
-            Format::Json => println!("{{\"edges\":[]}}"),
+            Format::Json => {
+                let output = serde_json::json!({
+                    "context": {
+                        "graph": {
+                            "total_edges": graph_stats.total_edges,
+                            "active_edges": graph_stats.active_edges,
+                        },
+                        "since": since_ts,
+                        "hint": format!("No edges since last commit. {} active edges exist.", graph_stats.active_edges),
+                    },
+                    "edges": [],
+                });
+                println!("{}", serde_json::to_string_pretty(&output).unwrap());
+            }
         }
         return Ok(());
     }
@@ -60,6 +79,8 @@ pub fn run(format: Format) -> Result<()> {
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or(now);
             let half_life = config.decay_half_life_days(&edge.ns);
+            let resolution_weight = super::helpers::edge_resolution_weight(&q, &edge);
+            let signal_density = super::helpers::edge_signal_density(&q, &edge);
 
             RankingInput {
                 edge,
@@ -68,13 +89,18 @@ pub fn run(format: Format) -> Result<()> {
                 effective_ts,
                 half_life_days: half_life,
                 now,
-                resolution_weight: 1.0,
-                signal_density: 1.0,
+                resolution_weight,
+                signal_density,
             }
         })
         .collect();
 
     let ranked = rank_edges(inputs, 50);
+
+    if markdown {
+        print_markdown(&q, &ranked, since_ts.as_deref());
+        return Ok(());
+    }
 
     match format {
         Format::Human => {
@@ -168,7 +194,13 @@ pub fn run(format: Format) -> Result<()> {
                 .collect();
 
             let output = serde_json::json!({
-                "since": since_ts,
+                "context": {
+                    "graph": {
+                        "total_edges": graph_stats.total_edges,
+                        "active_edges": graph_stats.active_edges,
+                    },
+                    "since": since_ts,
+                },
                 "edges": edges_json,
             });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
@@ -176,6 +208,80 @@ pub fn run(format: Format) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// PR-comment-ready markdown: new annotations grouped by file, with
+/// confidence, agent provenance, and actions. Designed for CI:
+/// `damask review --markdown | gh pr comment <n> --body-file -`
+fn print_markdown(
+    q: &IndexQuery,
+    ranked: &[damask_store::RankedEdge],
+    since: Option<&str>,
+) {
+    let since_label = since
+        .and_then(|s| s.split('T').next().map(String::from))
+        .unwrap_or_else(|| "repo start".to_string());
+    println!(
+        "## Damask review — {} annotation{} since {}\n",
+        ranked.len(),
+        if ranked.len() == 1 { "" } else { "s" },
+        since_label
+    );
+
+    // Group by file path via the edge's span endpoint.
+    let mut by_file: std::collections::BTreeMap<String, Vec<&damask_store::RankedEdge>> =
+        std::collections::BTreeMap::new();
+    for re in ranked {
+        let span = re
+            .edge
+            .from_id
+            .as_deref()
+            .filter(|id| id.starts_with("s_"))
+            .or_else(|| re.edge.to_id.as_deref().filter(|id| id.starts_with("s_")))
+            .and_then(|id| q.span_by_id(id).ok().flatten());
+        let key = match &span {
+            Some(s) => match (s.line_start, s.line_end) {
+                (Some(a), Some(b)) => format!("`{}` lines {a}–{b}", s.path),
+                _ => format!("`{}`", s.path),
+            },
+            None => "_(no span)_".to_string(),
+        };
+        by_file.entry(key).or_default().push(re);
+    }
+
+    for (file, edges) in &by_file {
+        println!("### {file}\n");
+        for re in edges {
+            let payload: serde_json::Value =
+                serde_json::from_str(&re.edge.payload).unwrap_or(serde_json::json!({}));
+            let env = PayloadEnvelope::new(&payload);
+            let conf = env
+                .confidence()
+                .map(|c| format!(", confidence {c:.2}"))
+                .unwrap_or_default();
+            let agent = re
+                .edge
+                .agent
+                .as_deref()
+                .map(|a| format!(" — _{a}_"))
+                .unwrap_or_default();
+            println!(
+                "- **{}**{conf}: {}{agent} `{}`",
+                re.edge.rel,
+                env.summary().unwrap_or("(no summary)"),
+                re.edge.id
+            );
+            if let Some(action) = env.action() {
+                println!("  - action: {action}");
+            }
+        }
+        println!();
+    }
+
+    println!(
+        "_Generated by `damask review --markdown`. Confirm with `damask endorse <id>`, \
+         contest with `damask dispute <id>`._"
+    );
 }
 
 /// Get the timestamp of the last git commit, for filtering "new since last commit".

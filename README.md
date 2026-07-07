@@ -72,10 +72,52 @@ damask review       New edges since last commit, ranked and grouped
 damask compact      Remove inactive edges, shrink JSONL files
 damask status       Project health: counts, staleness, freshness
 damask lint         Flag low-value edges and quality issues
+damask verify       Run `check` commands from payloads; --auto endorses/disputes by result
+damask briefing     Compact warm-start digest (Claude Code SessionStart hook)
+damask peek         Point-of-use context injection (PostToolUse/UserPromptSubmit hooks)
+damask harvest      Session-end record/quality nudge (Claude Code Stop hook)
 damask tui          Interactive terminal UI
 ```
 
+`search` reranks FTS matches with the composite quality score and accepts
+repeatable `--where` predicates (`damask search "auth" --where "confidence>=0.8"`).
+`review --markdown` emits a PR-comment-ready digest for CI.
+
+## Pairing with ck (optional)
+
+[ck](https://github.com/BeaconBay/ck) is a semantic code search engine. ck answers
+*"where is the code?"*; damask answers *"what do we know about it?"*. With both
+installed (`cargo install ck-search`), two extra moves light up:
+
+```bash
+# Semantic search over the knowledge graph itself — matches by meaning, not keywords
+damask search --sem "agents forgetting what they learned between sessions"
+
+# Annotate ck results with what the graph knows about each hit
+ck --sem "authentication" --jsonl src/ | damask enrich
+```
+
+`--sem` works by exporting edge summaries to `.damask/knowledge/` (auto-managed,
+never committed) and letting ck embed them. Without ck on PATH, `--sem` falls back
+to keyword search with a hint, and `enrich` accepts any `{path, span|line}` JSONL —
+damask never requires ck. One caveat: don't run `ck` directly against `crates/` in a
+Cargo workspace — its `.ck/` index dir breaks `members = ["crates/*"]` globs (damask
+keeps its own ck index safely inside `.damask/knowledge/`).
+
 All commands support `--format json` for machine consumption and `--ns <name>` to override the active namespace.
+
+## Claude Code integration
+
+`damask init --claude` scaffolds the agent loop end to end:
+
+- a `/damask` skill (`.claude/skills/damask/SKILL.md`) teaching agents to query and record
+- a `SessionStart` hook running `damask briefing` — every session starts with a compact digest of the graph (top findings, suspect/stale annotations) already in context
+- `PostToolUse`/`UserPromptSubmit` hooks running `damask peek` — when the agent reads or edits an annotated file, or submits a prompt matching recorded knowledge, the relevant edges are injected at that moment (deduplicated per session)
+- a `Stop` hook running `damask harvest` — if a session edited files but recorded nothing, the agent is nudged once to preserve durable findings; if it did record, the new edges are linted and serious quality problems trigger one fix-it nudge
+
+Facts written from a Claude Code session are stamped with `agent`/`session` provenance automatically (`DAMASK_AGENT`/`DAMASK_SESSION` to override). All settings merge non-destructively into an existing `.claude/settings.json`, and `init` writes a `merge=union` gitattribute so concurrent branches never conflict on edge logs. See `damask help hooks`.
+
+To measure the cold-start savings on your own repo: `scripts/coldstart-bench.sh "<task>" 3` (runs the same task via `claude -p` with and without the graph; costs real tokens).
 
 ## Architecture
 

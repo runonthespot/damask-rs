@@ -1,12 +1,12 @@
 use anyhow::Context;
 use damask_core::PayloadEnvelope;
-use damask_store::{needs_inactive_edges, update_index_with_mode, DamaskProject, IndexMode, IndexQuery, Predicate};
+use damask_store::{needs_inactive_edges, update_index_with_mode, DamaskProject, GraphStats, IndexMode, IndexQuery, Predicate};
 use std::env;
 
 use crate::error::Result;
 use crate::output::Format;
 
-pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, format: Format, ns: Option<&str>) -> Result<()> {
+pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, offset: usize, show_closed: bool, format: Format, ns: Option<&str>) -> Result<()> {
     let preds: Vec<Predicate> = predicate_strs
         .iter()
         .map(|s| Predicate::parse(s).map_err(|e| anyhow::anyhow!("{e}")))
@@ -23,12 +23,22 @@ pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, format:
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let q = IndexQuery::new(&conn);
+    let graph_stats = q.graph_stats().map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    // Use all_edges_ns (includes inactive) when predicates need superseded edges
+    // Use all_edges_ns (includes inactive) when predicates need superseded/closed edges
     let all_edges = if needs_inactive_edges(&preds) {
         q.all_edges_ns(ns).map_err(|e| anyhow::anyhow!("{}", e))?
-    } else {
+    } else if show_closed {
         q.all_active_edges_ns(ns).map_err(|e| anyhow::anyhow!("{}", e))?
+    } else {
+        q.all_active_open_edges_ns(ns).map_err(|e| anyhow::anyhow!("{}", e))?
+    };
+
+    // Count closed edges hidden (for diagnostics)
+    let closed_hidden = if !show_closed && !needs_inactive_edges(&preds) {
+        graph_stats.closed_edges
+    } else {
+        0
     };
 
     let mut matched = Vec::new();
@@ -54,22 +64,45 @@ pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, format:
         }
     }
 
-    // Apply limit
-    matched.truncate(limit);
+    let total = matched.len();
+
+    // Apply offset + limit
+    let page: Vec<_> = matched.into_iter().skip(offset).take(limit).collect();
+    let count = page.len();
 
     let predicate_display = predicate_strs.join(" AND ");
 
     match format {
-        Format::Human => print_human(&matched, &predicate_display),
-        Format::Json => print_json(&matched),
+        Format::Human => print_human(&page, &predicate_display, offset, limit, count, total, closed_hidden as usize, &preds, &all_edges, &q),
+        Format::Json => print_json(&page, offset, limit, count, total, closed_hidden, &graph_stats, &preds, &all_edges, &q),
     }
 
     Ok(())
 }
 
-fn print_human(matched: &[(&damask_store::index::query::EdgeRow, u32, u32)], predicate: &str) {
-    if matched.is_empty() {
-        println!("No edges matching: {predicate}");
+fn print_human(
+    matched: &[(&damask_store::index::query::EdgeRow, u32, u32)],
+    predicate: &str,
+    offset: usize,
+    _limit: usize,
+    count: usize,
+    total: usize,
+    closed_hidden: usize,
+    preds: &[Predicate],
+    all_edges: &[damask_store::index::query::EdgeRow],
+    q: &IndexQuery,
+) {
+    if count == 0 {
+        println!("0 edges matching: {predicate}");
+        // Near-miss diagnostics for numeric fields
+        if let Some(near_miss) = compute_near_miss(preds, all_edges, q) {
+            println!("  Nearest miss: {}={} ({} edges at this level)", near_miss.field, near_miss.nearest_value, near_miss.count_at_nearest);
+        }
+        if total > 0 {
+            println!("  {} total matched before pagination", total);
+        }
+        let active = all_edges.len();
+        println!("  {} active edges exist — try broadening your query", active);
         return;
     }
 
@@ -115,10 +148,36 @@ fn print_human(matched: &[(&damask_store::index::query::EdgeRow, u32, u32)], pre
         println!();
     }
 
-    println!("  {} edges matching: {}", matched.len(), predicate);
+    // Footer with pagination info
+    let start = offset + 1;
+    let end = offset + count;
+    let closed_hint = if closed_hidden > 0 {
+        format!(" ({} closed hidden, use --show-closed)", closed_hidden)
+    } else {
+        String::new()
+    };
+    println!("Showing {}-{} of {} edges matching: {}{}", start, end, total, predicate, closed_hint);
+
+    // Next-page hint
+    if offset + count < total {
+        let next_offset = offset + count;
+        let pred_args = predicate.replace(" AND ", "\" \"");
+        println!("  Next: damask where \"{pred_args}\" --offset {next_offset}");
+    }
 }
 
-fn print_json(matched: &[(&damask_store::index::query::EdgeRow, u32, u32)]) {
+fn print_json(
+    matched: &[(&damask_store::index::query::EdgeRow, u32, u32)],
+    offset: usize,
+    limit: usize,
+    count: usize,
+    total: usize,
+    closed_hidden: u64,
+    graph_stats: &GraphStats,
+    preds: &[Predicate],
+    all_edges: &[damask_store::index::query::EdgeRow],
+    q: &IndexQuery,
+) {
     let edges_json: Vec<serde_json::Value> = matched
         .iter()
         .map(|(edge, endorsements, disputes)| {
@@ -138,6 +197,124 @@ fn print_json(matched: &[(&damask_store::index::query::EdgeRow, u32, u32)]) {
         })
         .collect();
 
-    let output = serde_json::json!({ "edges": edges_json });
+    let mut output = serde_json::json!({
+        "context": {
+            "graph": {
+                "total_edges": graph_stats.total_edges,
+                "active_edges": graph_stats.active_edges,
+                "closed_edges": graph_stats.closed_edges,
+            },
+            "query": {
+                "total_matched": total,
+                "closed_hidden": closed_hidden,
+            },
+            "showing": {
+                "offset": offset,
+                "limit": limit,
+                "count": count,
+                "total": total,
+            },
+        },
+        "edges": edges_json,
+    });
+
+    // Add near-miss diagnostics for zero-result queries
+    if count == 0 {
+        if let Some(near_miss) = compute_near_miss(preds, all_edges, q) {
+            output["context"]["near_miss"] = serde_json::json!({
+                "field": near_miss.field,
+                "operator": near_miss.operator,
+                "threshold": near_miss.threshold,
+                "nearest_value": near_miss.nearest_value,
+                "count_at_nearest": near_miss.count_at_nearest,
+            });
+        }
+    }
+
     println!("{}", serde_json::to_string_pretty(&output).unwrap());
+}
+
+struct NearMiss {
+    field: String,
+    operator: String,
+    threshold: f64,
+    nearest_value: f64,
+    count_at_nearest: usize,
+}
+
+/// When a query returns 0 results and has a numeric predicate, find the closest non-matching value.
+fn compute_near_miss(
+    preds: &[Predicate],
+    all_edges: &[damask_store::index::query::EdgeRow],
+    q: &IndexQuery,
+) -> Option<NearMiss> {
+    use damask_store::predicate::CompareOp;
+
+    // Find the first numeric-field predicate (confidence or endorsed)
+    let numeric_pred = preds.iter().find(|p| {
+        matches!(p.field.as_str(), "confidence" | "endorsed" | "disputed")
+            && matches!(p.op, CompareOp::Gt | CompareOp::Gte | CompareOp::Lt | CompareOp::Lte)
+    })?;
+
+    let threshold: f64 = numeric_pred.value.parse().ok()?;
+    let op_str = match numeric_pred.op {
+        CompareOp::Gt => ">",
+        CompareOp::Gte => ">=",
+        CompareOp::Lt => "<",
+        CompareOp::Lte => "<=",
+        _ => return None,
+    };
+
+    // Collect all values for the field
+    let mut values: Vec<f64> = Vec::new();
+    for edge in all_edges {
+        let val = match numeric_pred.field.as_str() {
+            "confidence" => {
+                let payload: serde_json::Value =
+                    serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+                let env = PayloadEnvelope::new(&payload);
+                env.confidence()
+            }
+            "endorsed" => {
+                let c = q.endorsement_count(&edge.id).unwrap_or(0);
+                Some(c as f64)
+            }
+            "disputed" => {
+                let c = q.dispute_count(&edge.id).unwrap_or(0);
+                Some(c as f64)
+            }
+            _ => None,
+        };
+        if let Some(v) = val {
+            values.push(v);
+        }
+    }
+
+    if values.is_empty() {
+        return None;
+    }
+
+    // Find the closest value that doesn't match the predicate
+    let is_gt = matches!(numeric_pred.op, CompareOp::Gt | CompareOp::Gte);
+    let nearest = if is_gt {
+        // Looking for values > threshold but none found; find max value below threshold
+        values.iter().copied().filter(|&v| v <= threshold).fold(None, |acc: Option<f64>, v| {
+            Some(acc.map_or(v, |a: f64| a.max(v)))
+        })?
+    } else {
+        // Looking for values < threshold but none found; find min value above threshold
+        values.iter().copied().filter(|&v| v >= threshold).fold(None, |acc: Option<f64>, v| {
+            Some(acc.map_or(v, |a: f64| a.min(v)))
+        })?
+    };
+
+    let count_at_nearest = values.iter().filter(|&&v| (v - nearest).abs() < f64::EPSILON).count();
+
+    Some(NearMiss {
+        field: numeric_pred.field.clone(),
+        operator: op_str.to_string(),
+        threshold,
+        nearest_value: nearest,
+        count_at_nearest,
+    })
 }

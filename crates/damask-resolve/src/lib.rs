@@ -102,7 +102,9 @@ pub fn resolve_span(project_root: &Path, anchor: &SpanAnchor) -> Result<ResolveR
         }
 
         // Step 3: Search entire file for content hash match (relocated lines)
-        if let Some((new_start, new_end)) = search_file_for_hash(&file_lines, stored_hash, end - start + 1) {
+        if let Some((new_start, new_end)) =
+            search_file_for_hash(&file_lines, stored_hash, span_line_count(start, end))
+        {
             let recency = compute_recency(project_root, &anchor.path, anchor.commit.as_deref());
             return Ok(ResolveResult {
                 freshness: Freshness::new(Resolution::Relocated, recency),
@@ -190,7 +192,7 @@ fn resolve_renamed(
 
         // Search entire renamed file for hash match
         if let Some((new_start, new_end)) =
-            search_file_for_hash(file_lines, stored_hash, end - start + 1)
+            search_file_for_hash(file_lines, stored_hash, span_line_count(start, end))
         {
             return Ok(ResolveResult {
                 freshness: Freshness::new(Resolution::Relocated, recency),
@@ -277,13 +279,24 @@ fn read_file_lines(path: &Path) -> Result<Vec<String>, ResolveError> {
 }
 
 /// Extract lines [start, end] (1-indexed, inclusive) and join with newline.
+/// Returns None for inverted or out-of-range anchors (e.g. hand-written
+/// JSONL with `"lines":[10,5]`) instead of panicking.
 fn extract_lines(lines: &[String], start: u32, end: u32) -> Option<String> {
+    if end < start {
+        return None;
+    }
     let s = start.checked_sub(1)? as usize;
     let e = end as usize;
     if s >= lines.len() || e > lines.len() {
         return None;
     }
     Some(lines[s..e].join("\n"))
+}
+
+/// Length of a 1-indexed inclusive line range; 0 for inverted ranges so the
+/// hash search safely no-ops instead of underflowing.
+fn span_line_count(start: u32, end: u32) -> u32 {
+    end.checked_sub(start).map_or(0, |d| d + 1)
 }
 
 /// Slide a window of `span_len` lines across the file, hashing each window
@@ -686,6 +699,47 @@ mod tests {
     fn extract_lines_out_of_range() {
         let lines: Vec<String> = vec!["a", "b"].into_iter().map(String::from).collect();
         assert_eq!(extract_lines(&lines, 1, 5), None);
+    }
+
+    #[test]
+    fn extract_lines_inverted_range() {
+        // Hand-written JSONL can carry "lines":[10,5]; must not panic.
+        let lines: Vec<String> = (1..=20).map(|i| format!("line {}", i)).collect();
+        assert_eq!(extract_lines(&lines, 10, 5), None);
+        assert_eq!(extract_lines(&lines, 20, 1), None);
+        // Single-line span is still valid.
+        assert_eq!(extract_lines(&lines, 3, 3), Some("line 3".to_string()));
+    }
+
+    #[test]
+    fn resolve_inverted_anchor_is_unresolved_not_panic() {
+        // A corrupt anchor with line_end < line_start must resolve to
+        // Unresolved instead of slice-panicking (and bricking every command
+        // that touches the store, including the SessionStart briefing hook).
+        let dir = tempfile::tempdir().unwrap();
+        let content = (1..=20)
+            .map(|i| format!("line {}\n", i))
+            .collect::<String>();
+        fs::write(dir.path().join("test.rs"), content).unwrap();
+
+        let anchor = SpanAnchor {
+            path: "test.rs".to_string(),
+            line_start: Some(10),
+            line_end: Some(5),
+            content_hash: Some("badhash12345".to_string()),
+            symbol: None,
+            snippet: None,
+            commit: None,
+        };
+        let result = resolve_span(dir.path(), &anchor).unwrap();
+        assert_eq!(result.freshness.resolution, Resolution::Unresolved);
+    }
+
+    #[test]
+    fn span_line_count_guards_inversion() {
+        assert_eq!(span_line_count(5, 10), 6);
+        assert_eq!(span_line_count(3, 3), 1);
+        assert_eq!(span_line_count(10, 5), 0);
     }
 
     #[test]

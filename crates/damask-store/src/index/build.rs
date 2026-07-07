@@ -232,12 +232,15 @@ fn find_changed_files(
     for path in jsonl_files {
         let path_str = path.display().to_string();
 
+        // Nanosecond precision: agents append and re-query within the same
+        // second, so whole-second mtimes miss writes that follow an index
+        // update too quickly.
         let current_mtime = std::fs::metadata(path)
             .and_then(|m| m.modified())
             .map(|t| {
                 t.duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs()
+                    .as_nanos() as u64
             })
             .unwrap_or(0);
 
@@ -273,7 +276,7 @@ fn store_file_mtimes(
             .map(|t| {
                 t.duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs()
+                    .as_nanos() as u64
             })
             .unwrap_or(0);
 
@@ -329,7 +332,16 @@ fn schema_is_current(conn: &Connection) -> bool {
         )
         .unwrap_or(false);
 
-    has_spans_source && has_edges_source && has_fts
+    // Check that edges has the is_closed column (added for close command)
+    let has_is_closed: bool = conn
+        .query_row(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('edges') WHERE name='is_closed'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(false);
+
+    has_spans_source && has_edges_source && has_fts && has_is_closed
 }
 
 /// Delete all spans and edges that originated from the given source files.

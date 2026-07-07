@@ -1,4 +1,5 @@
 mod app;
+mod ck;
 mod commands;
 mod error;
 mod output;
@@ -11,7 +12,8 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init { claude, codex } => commands::init::run(claude, codex),
+        Command::Init { claude, codex, no_agents } => commands::init::run(claude, codex, no_agents),
+        Command::Help { topic } => commands::help::run(topic.as_deref()),
 
         Command::Ns { action } => commands::ns::run(action, cli.format),
 
@@ -77,19 +79,30 @@ fn main() -> anyhow::Result<()> {
             no_rank,
             rel,
             tag,
-            undisputed,
-        } => commands::at::run(&location, cli.format, all, no_rank, rel.as_deref(), tag.as_deref(), undisputed),
+            uncontested,
+            show_closed,
+            offset,
+        } => commands::at::run(&location, cli.format, all, no_rank, rel.as_deref(), tag.as_deref(), uncontested, show_closed, offset),
         Command::Where {
             predicates,
             since,
             limit,
-        } => commands::where_cmd::run(&predicates, since.as_deref(), limit, cli.format, cli.ns.as_deref()),
+            offset,
+            show_closed,
+        } => commands::where_cmd::run(&predicates, since.as_deref(), limit, offset, show_closed, cli.format, cli.ns.as_deref()),
         Command::Follow { id, rel, depth } => {
             commands::follow::run(&id, rel.as_deref(), depth, cli.format)
         }
-        Command::Endorse { edge_id, payload } => {
-            commands::endorse::run(&edge_id, payload.as_deref(), cli.ns.as_deref())
-        }
+        Command::Endorse {
+            edge_id,
+            payload,
+            batch,
+        } => commands::endorse::run(
+            edge_id.as_deref(),
+            payload.as_deref(),
+            batch,
+            cli.ns.as_deref(),
+        ),
         Command::Dispute {
             edge_id,
             payload,
@@ -102,13 +115,36 @@ fn main() -> anyhow::Result<()> {
             batch,
             cli.ns.as_deref(),
         ),
+        Command::Close {
+            edge_id,
+            payload,
+            reason,
+            batch,
+        } => commands::close::run(
+            edge_id.as_deref(),
+            payload.as_deref(),
+            reason.as_deref(),
+            batch,
+            cli.ns.as_deref(),
+        ),
         Command::Orient {
             rel,
             tag,
-            undisputed,
-        } => commands::orient::run(cli.format, rel.as_deref(), tag.as_deref(), undisputed),
+            uncontested,
+            show_closed,
+        } => commands::orient::run(cli.format, rel.as_deref(), tag.as_deref(), uncontested, show_closed),
+        Command::Briefing => commands::briefing::run(cli.format),
+        Command::Peek {
+            file,
+            prompt,
+            session,
+        } => commands::peek::run(file.as_deref(), prompt.as_deref(), session.as_deref()),
+        Command::Harvest { transcript } => commands::harvest::run(transcript.as_deref()),
         Command::Status => commands::status::run(cli.format),
         Command::Lint => commands::lint::run(cli.format),
+        Command::Verify { auto, timeout } => {
+            commands::verify::run(auto, timeout, cli.ns.as_deref(), cli.format)
+        }
         Command::Compact {
             namespace,
             aggressive,
@@ -117,10 +153,11 @@ fn main() -> anyhow::Result<()> {
         Command::Blame { id } => commands::blame::run(&id, cli.format),
         Command::Resolve { span_id } => commands::resolve::run(&span_id),
         Command::Log => commands::log::run(cli.format),
-        Command::Review => commands::review::run(cli.format),
-        Command::Search { query, ns, rel } => {
-            commands::search::run(&query, ns.as_deref(), rel.as_deref(), cli.format)
+        Command::Review { markdown } => commands::review::run(cli.format, markdown),
+        Command::Search { query, ns, rel, where_preds, sem, limit, offset, show_closed } => {
+            commands::search::run(&query, ns.as_deref(), rel.as_deref(), &where_preds, sem, limit, offset, show_closed, cli.format)
         }
+        Command::Enrich => commands::enrich::run(cli.format),
         Command::Diff { ns_a, ns_b } => commands::diff::run(&ns_a, &ns_b, cli.format),
         Command::Tui => commands::tui::run(),
     }

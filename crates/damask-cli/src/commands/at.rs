@@ -14,7 +14,7 @@ use crate::output::Format;
 /// Maximum edges displayed by default.
 const DEFAULT_LIMIT: usize = 12;
 
-pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter: Option<&str>, tag_filter: Option<&str>, undisputed: bool) -> Result<()> {
+pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter: Option<&str>, tag_filter: Option<&str>, uncontested: bool, show_closed: bool, offset: usize) -> Result<()> {
     let (file, line) = parse_location(location)?;
 
     let cwd = env::current_dir().context("failed to get current directory")?;
@@ -80,9 +80,13 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
         };
 
     for span in &spans {
-        let edges = q
-            .edges_for_span(&span.id)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let edges = if show_closed {
+            q.edges_for_span(&span.id)
+                .map_err(|e| anyhow::anyhow!("{}", e))?
+        } else {
+            q.edges_for_span_open(&span.id)
+                .map_err(|e| anyhow::anyhow!("{}", e))?
+        };
 
         for edge in edges {
             if seen_edge_ids.contains(&edge.id) {
@@ -183,7 +187,7 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
     }
 
     // Apply native filters
-    let has_filters = rel_filter.is_some() || tag_filter.is_some() || undisputed;
+    let has_filters = rel_filter.is_some() || tag_filter.is_some() || uncontested;
     if has_filters {
         all_inputs.retain(|input| {
             if let Some(rel) = rel_filter {
@@ -200,12 +204,15 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
                     return false;
                 }
             }
-            if undisputed && input.dispute_count > 0 {
+            if uncontested && input.dispute_count > 0 {
                 return false;
             }
             true
         });
     }
+
+    let graph_stats = q.graph_stats().map_err(|e| anyhow::anyhow!("{}", e))?;
+    let closed_hidden = if !show_closed { graph_stats.closed_edges } else { 0 };
 
     let limit = if all { usize::MAX } else { DEFAULT_LIMIT };
 
@@ -227,6 +234,11 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
         rank_edges(all_inputs, limit)
     };
 
+    let total_before_page = ranked.len();
+    // Apply offset
+    let ranked: Vec<_> = ranked.into_iter().skip(offset).collect();
+    let count = ranked.len();
+
     // Precompute target spans for freshness glyphs in human output
     let mut target_spans: std::collections::HashMap<
         String,
@@ -243,8 +255,8 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
     }
 
     match format {
-        Format::Human => print_human(&spans, &ranked, location, &target_spans),
-        Format::Json => print_json(&spans, &ranked),
+        Format::Human => print_human(&spans, &ranked, location, &target_spans, offset, count, total_before_page, closed_hidden),
+        Format::Json => print_json(&spans, &ranked, offset, limit, count, total_before_page, closed_hidden, &graph_stats),
     }
 
     Ok(())
@@ -266,6 +278,10 @@ fn print_human(
     ranked: &[RankedEdge],
     location: &str,
     target_spans: &std::collections::HashMap<String, damask_store::index::query::SpanRow>,
+    offset: usize,
+    count: usize,
+    total: usize,
+    closed_hidden: u64,
 ) {
     // Print span header with freshness glyph
     for span in spans {
@@ -373,11 +389,23 @@ fn print_human(
         println!();
     }
 
-    let total = ranked.len();
-    println!("  {} edges shown", total);
+    let start = offset + 1;
+    let end = offset + count;
+    let closed_hint = if closed_hidden > 0 {
+        format!(" ({} closed hidden, use --show-closed)", closed_hidden)
+    } else {
+        String::new()
+    };
+    if count < total {
+        println!("Showing {}-{} of {} edges{}", start, end, total, closed_hint);
+        let next_offset = offset + count;
+        println!("  Next: damask at {} --offset {next_offset}", location);
+    } else {
+        println!("  {} edges shown{}", count, closed_hint);
+    }
 }
 
-fn parse_resolution(s: &str) -> Option<Resolution> {
+pub(crate) fn parse_resolution(s: &str) -> Option<Resolution> {
     match s {
         "exact" => Some(Resolution::Exact),
         "relocated" => Some(Resolution::Relocated),
@@ -387,7 +415,7 @@ fn parse_resolution(s: &str) -> Option<Resolution> {
     }
 }
 
-fn parse_recency(s: &str) -> Option<Recency> {
+pub(crate) fn parse_recency(s: &str) -> Option<Recency> {
     match s {
         "unchanged" => Some(Recency::Unchanged),
         "file_changed" => Some(Recency::FileChanged),
@@ -418,7 +446,7 @@ fn freshness_glyph(resolution: Option<&str>, recency: Option<&str>) -> &'static 
     }
 }
 
-fn print_json(spans: &[damask_store::index::query::SpanRow], ranked: &[RankedEdge]) {
+fn print_json(spans: &[damask_store::index::query::SpanRow], ranked: &[RankedEdge], offset: usize, limit: usize, count: usize, total: usize, closed_hidden: u64, graph_stats: &damask_store::GraphStats) {
     let spans_json: Vec<serde_json::Value> = spans
         .iter()
         .map(|s| {
@@ -453,6 +481,22 @@ fn print_json(spans: &[damask_store::index::query::SpanRow], ranked: &[RankedEdg
         .collect();
 
     let output = serde_json::json!({
+        "context": {
+            "graph": {
+                "total_edges": graph_stats.total_edges,
+                "active_edges": graph_stats.active_edges,
+                "closed_edges": graph_stats.closed_edges,
+            },
+            "query": {
+                "closed_hidden": closed_hidden,
+            },
+            "showing": {
+                "offset": offset,
+                "limit": limit,
+                "count": count,
+                "total": total,
+            },
+        },
         "spans": spans_json,
         "edges": edges_json,
     });
