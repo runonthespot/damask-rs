@@ -212,6 +212,43 @@ class RelGroupItem extends vscode.TreeItem {
   }
 }
 
+/** A payload field as a tree node — arbitrary shapes welcome: scalars
+ * show inline, objects/arrays expand recursively. */
+class PayloadItem extends vscode.TreeItem {
+  constructor(key: string, public readonly value: unknown) {
+    const isContainer =
+      value !== null && typeof value === "object";
+    super(
+      key,
+      isContainer
+        ? vscode.TreeItemCollapsibleState.Collapsed
+        : vscode.TreeItemCollapsibleState.None
+    );
+    if (isContainer) {
+      this.description = Array.isArray(value)
+        ? `[${value.length}]`
+        : `{${Object.keys(value as object).length}}`;
+      this.iconPath = new vscode.ThemeIcon("json");
+    } else {
+      const text = String(value);
+      this.description = text.length > 100 ? text.slice(0, 100) + "…" : text;
+      this.tooltip = text;
+      this.iconPath = new vscode.ThemeIcon("symbol-field");
+    }
+    this.contextValue = "damaskPayload";
+  }
+
+  children(): PayloadItem[] {
+    if (this.value === null || typeof this.value !== "object") return [];
+    if (Array.isArray(this.value)) {
+      return this.value.map((v, i) => new PayloadItem(String(i), v));
+    }
+    return Object.entries(this.value as Record<string, unknown>).map(
+      ([k, v]) => new PayloadItem(k, v)
+    );
+  }
+}
+
 class AnchorItem extends vscode.TreeItem {
   constructor(public readonly span: SpanFact, role: string) {
     const lines =
@@ -290,9 +327,18 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     if (element instanceof EdgeItem) {
       const roles =
         element.anchors.length === 2 ? ["from", "to"] : ["anchor"];
-      return element.anchors.map(
+      const anchorItems = element.anchors.map(
         (span, i) => new AnchorItem(span, roles[Math.min(i, roles.length - 1)])
       );
+      // Payload nested in the tree, not hidden in a hover: every field a
+      // node, arbitrary shapes expand recursively.
+      const payloadItems = Object.entries(element.edge.payload ?? {}).map(
+        ([k, v]) => new PayloadItem(k, v)
+      );
+      return [...anchorItems, ...payloadItems];
+    }
+    if (element instanceof PayloadItem) {
+      return element.children();
     }
     if (element) {
       return [];
@@ -319,10 +365,14 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       if (bucket) bucket.push(e);
       else byRel.set(e.rel, [e]);
     }
+    // Arbitrary/custom rel types are first-class: unknown rels rank after
+    // the known judgment ordering, then by size, then alphabetically.
     return [...byRel.entries()]
       .sort(
         ([relA, edgesA], [relB, edgesB]) =>
-          relRank(relA) - relRank(relB) || edgesB.length - edgesA.length
+          relRank(relA) - relRank(relB) ||
+          edgesB.length - edgesA.length ||
+          relA.localeCompare(relB)
       )
       .map(([rel, edges]) => new RelGroupItem(rel, edges));
   }
