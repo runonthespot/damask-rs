@@ -45,7 +45,7 @@ If ck is installed, join code search with knowledge in one pipe:
 damask record src/auth.rs 42 67 risk -m "No rate limiting on login" -c 0.9 \
   --action "Add rate limiter" --symbol handle_login
 ```
-`-m` is the summary, `-c` confidence (0.0-1.0), `--severity critical|high|medium|low` is how much it MATTERS — orthogonal to confidence — and is the DEFAULT convention, not core: namespaces can assert their own payload schemas in `.damask/config.json` (`"namespaces":{"<ns>":{"schema":{"<field>":{"enum":[...],"rank":{"<value>":1.2}}}}}`) — enum-validated at write time, rank weights shape ordering. Add any field with `--field key=value`; EVERY payload field is filterable: `damask where "jurisdiction=EU"`. Inline JSON payloads also work for richer fields — run `damask help record` for the full schema.
+`-m` is the summary, `-c` confidence (0.0-1.0), `--severity critical|high|medium|low` is how much it MATTERS (orthogonal to confidence). Add any domain field with `--field key=value` — every payload field is then filterable (`damask where "jurisdiction=EU"`). Severity is the default convention, not core: a namespace can assert its own schema in `.damask/config.json` — `"namespaces":{"<ns>":{"schema":{"<field>":{"enum":[...],"rank":{"<value>":1.2}}}}}` — enum values are validated at write time and rank weights shape ordering. Inline JSON payloads also work; `damask help record` has the full schema.
 
 **4. Signal** — maintain graph quality:
 ```bash
@@ -54,10 +54,11 @@ damask close <edge_id> --reason resolved  # this is DONE — closes disappear fr
 damask dispute <edge_id> --reason incorrect  # this is WRONG (use close for fixed things)
 damask confirm <span_or_edge_id>     # drifted anchor still true — re-anchors it, clears the ⚠
 damask triage                        # find rot, get ready-to-run bulk closes (never auto)
+damask sweep --reanchor              # bulk-heal every drifted anchor in one pass
 ```
-Use `close` when a finding is resolved, `dispute` only when it is wrong. `--reason` accepts the templates or any free text (`--reason "superseded by PR #42"`).
+Use `close` when a finding is resolved, `dispute` only when it is wrong. `--reason` accepts the templates or any free text (`--reason "superseded by PR #42"`). Investigated a risk and dismissed it? Record it with `"status":"ruled_out"` — it sinks in every ranking, and `damask triage --close-ruled-out` retires it later.
 
-**Fan-outs / parallel agents:** concurrent appends are torn-write-safe (single atomic write per batch — tested under 8 parallel writers). Per-agent namespaces are for ISOLATION of concerns, not safety. Never `ns set` in a parallel agent (it is a shared file); set the `DAMASK_NS` env var per process or pass `--ns` instead. Investigated a risk and dismissed it? Record with `"status":"ruled_out"` (schema) — it sinks in every ranking and `damask triage --close-ruled-out` can retire it later.
+**Fan-outs / parallel agents:** concurrent appends are torn-write-safe (single atomic write per batch — tested under 8 parallel writers). Per-agent namespaces are for ISOLATION of concerns, not safety. Never `ns set` in a parallel agent (it is a shared file); set the `DAMASK_NS` env var per process or pass `--ns` instead. For bulk writes, `damask batch --stdin` creates many facts atomically with `$N` back-references.
 
 ## Command Reference
 
@@ -69,6 +70,7 @@ Use `close` when a finding is resolved, `dispute` only when it is wrong. `--reas
 | `search <query>` | Full-text search over payloads |
 | `record <file> <start> <end> <rel> -m "..." -c 0.9` | Create span + edge atomically |
 | `bootstrap` | Seed an empty graph (manifests, TODOs, co-change history) |
+| `batch --stdin` | Create many facts atomically ($N back-references) |
 | `endorse <id>` | Signal confirmation |
 | `dispute <id> --reason <r>` | Signal contradiction (wrong ≠ resolved — resolved means `close`) |
 | `close <id> --reason resolved` | Mark done: disappears from at/where/briefing |
