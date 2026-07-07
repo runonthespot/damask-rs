@@ -213,6 +213,16 @@ class EdgeItem extends vscode.TreeItem {
   }
 }
 
+/** A namespace — one edge-set folder (.damask/edges/<ns>.jsonl). */
+class NamespaceItem extends vscode.TreeItem {
+  constructor(public readonly ns: string, public readonly edges: EdgeFact[]) {
+    super(ns, vscode.TreeItemCollapsibleState.Collapsed);
+    this.description = `${edges.length} edge${edges.length === 1 ? "" : "s"}`;
+    this.iconPath = new vscode.ThemeIcon("folder-library");
+    this.contextValue = "damaskNamespace";
+  }
+}
+
 class RelGroupItem extends vscode.TreeItem {
   constructor(public readonly rel: string, public readonly edges: EdgeFact[]) {
     super(`${rel} (${edges.length})`, vscode.TreeItemCollapsibleState.Collapsed);
@@ -359,7 +369,28 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     );
   }
 
+  /** Rel-group sections for a set of edges (judgment-first ordering). */
+  private relGroups(edges: EdgeFact[]): RelGroupItem[] {
+    const byRel = new Map<string, EdgeFact[]>();
+    for (const e of edges) {
+      const bucket = byRel.get(e.rel);
+      if (bucket) bucket.push(e);
+      else byRel.set(e.rel, [e]);
+    }
+    return [...byRel.entries()]
+      .sort(
+        ([relA, edgesA], [relB, edgesB]) =>
+          relRank(relA) - relRank(relB) ||
+          edgesB.length - edgesA.length ||
+          relA.localeCompare(relB)
+      )
+      .map(([rel, es]) => new RelGroupItem(rel, es));
+  }
+
   getChildren(element?: vscode.TreeItem): vscode.TreeItem[] {
+    if (element instanceof NamespaceItem) {
+      return this.relGroups(element.edges);
+    }
     if (element instanceof RelGroupItem) {
       // Within a type: confidence descending — best findings first.
       return element.edges
@@ -414,28 +445,27 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return [new vscode.TreeItem("No .damask/ graph in this workspace")];
     }
 
-    // Top level: one group per edge type — judgment rels first, ties
-    // broken by size, mirroring orient's sectioning.
-    const byRel = new Map<string, EdgeFact[]>();
+    // Top level: one folder per namespace (edge set), then rel sections
+    // within. A single-namespace store skips the folder ceremony.
+    const byNs = new Map<string, EdgeFact[]>();
     let matchCount = 0;
     for (const e of this.graph.edges) {
       if (!this.showClosed && e.is_closed) continue;
       if (!this.matches(e)) continue;
       matchCount++;
-      const bucket = byRel.get(e.rel);
+      const bucket = byNs.get(e.ns);
       if (bucket) bucket.push(e);
-      else byRel.set(e.rel, [e]);
+      else byNs.set(e.ns, [e]);
     }
-    // Arbitrary/custom rel types are first-class: unknown rels rank after
-    // the known judgment ordering, then by size, then alphabetically.
-    const groups: vscode.TreeItem[] = [...byRel.entries()]
-      .sort(
-        ([relA, edgesA], [relB, edgesB]) =>
-          relRank(relA) - relRank(relB) ||
-          edgesB.length - edgesA.length ||
-          relA.localeCompare(relB)
-      )
-      .map(([rel, edges]) => new RelGroupItem(rel, edges));
+    const groups: vscode.TreeItem[] =
+      byNs.size === 1
+        ? this.relGroups([...byNs.values()][0])
+        : [...byNs.entries()]
+            .sort(
+              ([nsA, edgesA], [nsB, edgesB]) =>
+                edgesB.length - edgesA.length || nsA.localeCompare(nsB)
+            )
+            .map(([ns, edges]) => new NamespaceItem(ns, edges));
 
     // Active search pinned at the top — click to clear.
     if (this.filterQuery) {
