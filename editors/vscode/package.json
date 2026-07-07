@@ -2,7 +2,7 @@
   "name": "damask-vscode",
   "displayName": "Damask",
   "description": "Navigate your repo's damask knowledge graph: findings as edges, anchors as nodes, click-through to the exact code.",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "publisher": "damask",
   "license": "MIT",
   "repository": {
@@ -67,6 +67,10 @@
         "command": "damask.hideClosed",
         "title": "Damask: Hide Closed Edges",
         "icon": "$(eye)"
+      },
+      {
+        "command": "damask.copyPrompt",
+        "title": "Copy Remediation Prompt for Claude"
       }
     ],
     "menus": {
@@ -90,6 +94,23 @@
           "command": "damask.hideClosed",
           "when": "view == damaskGraph && damaskShowClosed",
           "group": "navigation@3"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "damask.copyPrompt",
+          "when": "view == damaskGraph && viewItem == damaskEdge",
+          "group": "damask@1"
+        },
+        {
+          "command": "damask.copyPrompt",
+          "when": "view == damaskGraph && viewItem == damaskRelGroup",
+          "group": "damask@1"
+        },
+        {
+          "command": "damask.copyPrompt",
+          "when": "view == damaskGraph && viewItem == damaskNamespace",
+          "group": "damask@1"
         }
       ]
     },

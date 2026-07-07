@@ -245,7 +245,7 @@ class EdgeItem extends vscode.TreeItem {
       (isRuledOut(edge) ? " (ruled out)" : "");
     const dot = FRESHNESS_DOT[worstFreshness(anchors)];
     super(
-      `${dot ? dot + " " : ""}${summary(edge)}`,
+      `${summary(edge)}`,
       anchors.length > 0
         ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None
@@ -260,7 +260,7 @@ class EdgeItem extends vscode.TreeItem {
         : "";
     this.description = `${edge.rel}${
       conf !== undefined ? ` ${conf.toFixed(2)}` : ""
-    }${marks}${link}${tagChips(tags(edge))}`;
+    }${marks}${link}${tagChips(tags(edge))}${dot ? ` ${dot}` : ""}`;
     // Full payload, pretty-printed — the hover is the edge's detail view.
     const md = new vscode.MarkdownString(
       `**${edge.rel}** ${conf !== undefined ? `(${conf})` : ""}${marks}\n\n` +
@@ -552,6 +552,39 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 // Activation
 // ---------------------------------------------------------------------------
 
+/** Deterministic remediation prompt for an edge — stable phrasing, ids
+ * and commands included, ready to paste into Claude Code. */
+function edgePrompt(edge: EdgeFact, anchors: SpanFact[]): string {
+  const a = anchors[0];
+  const loc = a
+    ? `${a.path}${a.line_start != null ? `:${a.line_start}-${a.line_end}` : ""}`
+    : "(no anchor)";
+  return (
+    `Please take a look in damask at edge ${edge.id} — [${edge.rel}] ` +
+    `"${summary(edge)}" anchored at ${loc} — verify it against the current ` +
+    `code and remediate it. Useful commands: \`damask why ${edge.id}\` ` +
+    `(provenance), \`damask at ${a ? a.path : "<file>"}\` (neighboring ` +
+    `knowledge). When fixed, close it: \`damask close ${edge.id} --reason ` +
+    `resolved\`. If the finding is wrong, dispute it instead: \`damask ` +
+    `dispute ${edge.id} --reason incorrect\`.`
+  );
+}
+
+function groupPrompt(rel: string, edges: EdgeFact[], ns?: string): string {
+  const scope = ns ? ` in namespace "${ns}"` : "";
+  const ids = edges.slice(0, 10).map((e) => e.id).join(", ");
+  const more = edges.length > 10 ? ` (and ${edges.length - 10} more)` : "";
+  return (
+    `Please work through the ${edges.length} open [${rel}] edges${scope} in ` +
+    `this repo's damask knowledge graph: ${ids}${more}. List them with ` +
+    `\`damask where "rel=${rel}"\`${ns ? ` --ns ${ns}` : ""}, then for each: ` +
+    `verify against the current code, remediate what is real, and signal — ` +
+    `\`damask close <id> --reason resolved\` when fixed, \`damask dispute ` +
+    `<id> --reason incorrect\` when wrong, \`damask confirm <id>\` when true ` +
+    `but drifted. Work one edge at a time and show your evidence.`
+  );
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new DamaskTreeProvider();
 
@@ -597,6 +630,33 @@ export function activate(context: vscode.ExtensionContext): void {
       provider.filterQuery = undefined;
       provider.repaint();
     }),
+    vscode.commands.registerCommand(
+      "damask.copyPrompt",
+      async (item: vscode.TreeItem) => {
+        let text: string | undefined;
+        if (item instanceof EdgeItem) {
+          text = edgePrompt(item.edge, item.anchors);
+        } else if (item instanceof RelGroupItem) {
+          text = groupPrompt(item.rel, item.edges);
+        } else if (item instanceof NamespaceItem) {
+          const rels = [...new Set(item.edges.map((e) => e.rel))].join(", ");
+          text =
+            `Please work through the ${item.edges.length} open edges in ` +
+            `namespace "${item.ns}" of this repo's damask knowledge graph ` +
+            `(rels: ${rels}). Start with \`damask orient --ns ${item.ns}\`, ` +
+            `then verify, remediate, and signal each edge — close what is ` +
+            `fixed, dispute what is wrong, confirm what drifted but holds. ` +
+            `Work one edge at a time and show your evidence.`;
+        }
+        if (text) {
+          await vscode.env.clipboard.writeText(text);
+          vscode.window.setStatusBarMessage(
+            "Damask: remediation prompt copied — paste into Claude Code",
+            4000
+          );
+        }
+      }
+    ),
     vscode.commands.registerCommand(
       "damask.openAnchor",
       async (span: SpanFact) => {
