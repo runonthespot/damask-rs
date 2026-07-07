@@ -1,0 +1,92 @@
+{
+  "name": "damask-vscode",
+  "displayName": "Damask",
+  "description": "Navigate your repo's damask knowledge graph: findings as edges, anchors as nodes, click-through to the exact code.",
+  "version": "0.1.0",
+  "publisher": "damask",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/runonthespot/damask"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "workspaceContains:.damask/config.json"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "damask",
+          "title": "Damask",
+          "icon": "media/damask.svg"
+        }
+      ]
+    },
+    "views": {
+      "damask": [
+        {
+          "id": "damaskGraph",
+          "name": "Knowledge Graph",
+          "icon": "media/damask.svg",
+          "contextualTitle": "Damask Knowledge Graph"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "damask.refresh",
+        "title": "Damask: Refresh Graph",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "damask.openAnchor",
+        "title": "Damask: Open Anchor"
+      },
+      {
+        "command": "damask.showClosed",
+        "title": "Damask: Toggle Closed Edges",
+        "icon": "$(archive)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "damask.refresh",
+          "when": "view == damaskGraph",
+          "group": "navigation"
+        },
+        {
+          "command": "damask.showClosed",
+          "when": "view == damaskGraph",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Damask",
+      "properties": {
+        "damask.path": {
+          "type": "string",
+          "default": "damask",
+          "description": "Path to the damask CLI binary."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

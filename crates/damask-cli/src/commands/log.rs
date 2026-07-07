@@ -76,11 +76,14 @@ pub fn run(format: Format, limit: usize, since: Option<&str>) -> Result<()> {
             json: serde_json::json!({
                 "type": "edge",
                 "id": edge.id,
+                "from": edge.from_id,
+                "to": edge.to_id,
                 "rel": edge.rel,
                 "payload": p,
                 "ns": edge.ns,
                 "ts": edge.ts,
                 "is_active": edge.is_active,
+                "is_closed": edge.is_closed,
             }),
         });
     }

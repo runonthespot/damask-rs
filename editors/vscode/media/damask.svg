@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- woven diamond: threads crossing, knowledge pinned at the crossings -->
+  <path d="M12 3 L21 12 L12 21 L3 12 Z"/>
+  <path d="M7.5 7.5 L16.5 16.5"/>
+  <path d="M16.5 7.5 L7.5 16.5"/>
+  <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/>
+</svg>
