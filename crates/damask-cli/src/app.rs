@@ -58,6 +58,13 @@ pub enum Command {
         no_agents: bool,
     },
 
+    /// Seed an empty graph deterministically: manifests, TODO/FIXME comments, co-change history.
+    Bootstrap {
+        /// Regenerate the bootstrap namespace even if it already has facts.
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Show detailed reference for a topic (record, batch, where, rels, patterns, quality, cold-start).
     Help {
         /// Topic name (omit to list available topics).
@@ -107,6 +114,22 @@ pub enum Command {
         /// Read payload from stdin.
         #[arg(long)]
         stdin: bool,
+
+        /// Payload summary (skips JSON: -m "what you found").
+        #[arg(short = 'm', long)]
+        summary: Option<String>,
+
+        /// Payload confidence, 0.0-1.0 (e.g. -c 0.9).
+        #[arg(short = 'c', long, value_parser = parse_confidence)]
+        confidence: Option<f64>,
+
+        /// Payload action: what should be done about it.
+        #[arg(long)]
+        action: Option<String>,
+
+        /// Payload tag (repeatable).
+        #[arg(long = "tag")]
+        tags: Vec<String>,
     },
 
     /// Create a span and edge in one shot.
@@ -123,8 +146,32 @@ pub enum Command {
         /// Relationship type (e.g., "risk", "depends_on").
         rel: String,
 
-        /// JSON payload (inline).
-        payload: String,
+        /// JSON payload (inline; or use -m/-c flags instead).
+        payload: Option<String>,
+
+        /// Read payload from file instead of inline.
+        #[arg(short = 'f', long = "file")]
+        payload_file: Option<String>,
+
+        /// Read payload from stdin.
+        #[arg(long)]
+        stdin: bool,
+
+        /// Payload summary (skips JSON: -m "what you found").
+        #[arg(short = 'm', long)]
+        summary: Option<String>,
+
+        /// Payload confidence, 0.0-1.0 (e.g. -c 0.9).
+        #[arg(short = 'c', long, value_parser = parse_confidence)]
+        confidence: Option<f64>,
+
+        /// Payload action: what should be done about it.
+        #[arg(long)]
+        action: Option<String>,
+
+        /// Payload tag (repeatable).
+        #[arg(long = "tag")]
+        tags: Vec<String>,
 
         /// Symbol anchor (function name, section heading).
         #[arg(long)]
@@ -459,4 +506,25 @@ pub enum NsAction {
         /// Target namespace.
         target: String,
     },
+}
+
+/// Parse and range-check a confidence value at the CLI boundary, so a
+/// weak model's `-c 9` is a teaching error instead of silent ranking
+/// poison.
+fn parse_confidence(s: &str) -> Result<f64, String> {
+    let v: f64 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a number (confidence is 0.0-1.0, e.g. -c 0.9)"))?;
+    if (0.0..=1.0).contains(&v) {
+        Ok(v)
+    } else {
+        let hint = if v > 1.0 && v <= 10.0 {
+            format!(" — did you mean {}?", v / 10.0)
+        } else if v > 10.0 && v <= 100.0 {
+            format!(" — did you mean {}?", v / 100.0)
+        } else {
+            String::new()
+        };
+        Err(format!("confidence must be between 0.0 and 1.0 (got {v}{hint})"))
+    }
 }

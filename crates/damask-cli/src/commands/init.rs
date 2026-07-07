@@ -43,6 +43,40 @@ const HARVEST_HOOK_KEY: &str = "damask harvest";
 const PEEK_HOOK_KEY: &str = "damask peek";
 const PEEK_TOOL_MATCHER: &str = "Read|Edit|Write|MultiEdit|NotebookEdit";
 
+/// True when running inside a live Claude Code session — the primary
+/// adopter of `damask init` is the agent itself, and it should not need
+/// to know about --claude.
+fn claude_env_present() -> bool {
+    std::env::var_os("CLAUDECODE").is_some()
+        || std::env::var_os("CLAUDE_CODE_SESSION_ID").is_some()
+}
+
+/// Default namespace from the repo directory name: lowercased, non
+/// [a-z0-9_-] squeezed to '-'. Falls back to "main".
+fn default_ns_name(root: &Path) -> String {
+    let raw = root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let mut out = String::new();
+    let mut last_dash = true; // suppress leading dashes
+    for c in raw.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' {
+            out.push(c);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "main".to_string()
+    } else {
+        trimmed
+    }
+}
+
 pub fn run(force_claude: bool, force_codex: bool, no_agents: bool) -> Result<()> {
     let cwd = env::current_dir().context("failed to get current directory")?;
 
@@ -53,13 +87,26 @@ pub fn run(force_claude: bool, force_codex: bool, no_agents: bool) -> Result<()>
             println!("  edges/       — namespace JSONL files");
             println!("  config.json  — project configuration");
 
-            // Create .gitignore
+            // Create .gitignore. `.active_ns` is a per-checkout selection,
+            // not shared state — committing it caused real cross-namespace
+            // write pollution between checkouts.
             let gitignore_path = p.damask_dir.join(".gitignore");
             std::fs::write(
                 &gitignore_path,
-                "index.db\nindex.db-wal\nindex.db-shm\n.session/\nedges/.private/\nedges/.views/\nedges/.local/\n",
+                ".active_ns\nindex.db\nindex.db-wal\nindex.db-shm\n.session/\nedges/.private/\nedges/.views/\nedges/.local/\n",
             )
             .context("failed to write .gitignore")?;
+
+            // Default namespace so the first `damask record` succeeds
+            // without a `ns set` ritual.
+            let ns = default_ns_name(&p.root);
+            let mut config = p.read_config().map_err(|e| anyhow::anyhow!("{}", e))?;
+            config.default_ns = Some(ns.clone());
+            let config_json = serde_json::to_string_pretty(&config)
+                .context("failed to serialize config.json")?;
+            std::fs::write(p.config_path(), config_json)
+                .context("failed to write config.json")?;
+            println!("  Default namespace: {ns} (change with `damask ns set <name>`)");
 
             p
         }
@@ -82,10 +129,13 @@ pub fn run(force_claude: bool, force_codex: bool, no_agents: bool) -> Result<()>
         return Ok(());
     }
 
-    // Determine which agents to scaffold:
-    // Explicit flags always win; otherwise auto-detect from directory presence.
+    // Determine which agents to scaffold: explicit flags always win;
+    // otherwise auto-detect from directory presence OR the live session
+    // environment — the primary adopter running `damask init` is the
+    // agent itself, and bare init must install the loop for it.
     let root = &project.root;
-    let do_claude = force_claude || (!force_codex && root.join(".claude").is_dir());
+    let do_claude =
+        force_claude || (!force_codex && (root.join(".claude").is_dir() || claude_env_present()));
     let do_codex = force_codex || (!force_claude && root.join(".agents").is_dir());
 
     if do_claude {
@@ -101,6 +151,19 @@ pub fn run(force_claude: bool, force_codex: bool, no_agents: bool) -> Result<()>
         println!("To add agent integration later:");
         println!("  damask init --claude    # Claude Code");
         println!("  damask init --codex     # OpenAI Codex CLI");
+    }
+
+    if do_claude {
+        // The SessionStart hook only fires from the NEXT session — print
+        // the same briefing inline so the session that ran init gets its
+        // warm start too, then show how to make the graph shared.
+        println!();
+        println!("Warm start for this session (hooks take over from the next one):");
+        println!();
+        let _ = super::briefing::run(crate::output::Format::Human);
+        println!();
+        println!("Share the graph with your team and their agents:");
+        println!("  git add .damask .claude && git commit -m \"Add damask knowledge fabric\"");
     }
 
     Ok(())

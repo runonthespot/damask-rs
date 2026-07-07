@@ -19,7 +19,7 @@ Make claims mechanically verifiable when possible: add a `check` field (shell co
 damask orient                        # graph stats, top findings, recent activity
 damask orient --rel risk             # filter by relationship type
 ```
-Cold start (empty graph)? Run `damask help cold-start` for the playbook.
+Cold start (empty graph)? Seed instantly with `damask bootstrap` (manifests, TODOs, co-change history), then run `damask help cold-start` for the playbook.
 
 **2. Query** — check what's known before working:
 ```bash
@@ -35,11 +35,10 @@ If ck is installed, join code search with knowledge in one pipe:
 
 **3. Record** — preserve findings as you work:
 ```bash
-damask record src/auth.rs 42 67 risk \
-  '{"summary":"No rate limiting on login","confidence":0.9,"action":"Add rate limiter"}' \
-  --symbol handle_login
+damask record src/auth.rs 42 67 risk -m "No rate limiting on login" -c 0.9 \
+  --action "Add rate limiter" --symbol handle_login
 ```
-Payload requires `summary` + `confidence`. Run `damask help record` for full payload schema.
+`-m` is the summary, `-c` confidence (0.0-1.0). Inline JSON payloads also work for richer fields — run `damask help record` for the full schema.
 
 **4. Signal** — maintain graph quality:
 ```bash

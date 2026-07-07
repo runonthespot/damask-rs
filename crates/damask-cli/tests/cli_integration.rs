@@ -4,7 +4,21 @@ use std::fs;
 use tempfile::TempDir;
 
 fn damask() -> Command {
-    Command::cargo_bin("damask").unwrap()
+    let mut cmd = Command::cargo_bin("damask").unwrap();
+    // Hermetic: tests must not inherit a live Claude Code session (or
+    // damask identity vars) from the environment running cargo test —
+    // init auto-scaffolds and writes stamp provenance from these.
+    for var in [
+        "CLAUDECODE",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_SESSION_ID",
+        "DAMASK_AGENT",
+        "DAMASK_SESSION",
+        "DAMASK_NS",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd
 }
 
 fn init_project(dir: &TempDir) -> &TempDir {
@@ -188,10 +202,12 @@ fn edge_rejects_invalid_id() {
 }
 
 #[test]
-fn ns_required_for_span() {
+fn init_default_namespace_makes_first_write_succeed() {
+    // init writes a default namespace (sanitized repo dir name) so the
+    // first write succeeds without a `ns set` ritual.
     let dir = TempDir::new().unwrap();
     init_project(&dir);
-    // Don't set a namespace
+    // Don't set a namespace — the default from init must carry the write.
 
     fs::write(dir.path().join("test.rs"), "x\n").unwrap();
 
@@ -199,8 +215,16 @@ fn ns_required_for_span() {
         .args(["span", "test.rs", "1", "1"])
         .current_dir(dir.path())
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("no active namespace"));
+        .success();
+
+    // The write landed in the config default_ns.
+    let config = fs::read_to_string(dir.path().join(".damask/config.json")).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&config).unwrap();
+    let ns = doc["default_ns"].as_str().expect("init must set default_ns");
+    assert!(
+        dir.path().join(format!(".damask/edges/{ns}.jsonl")).is_file(),
+        "span must land in the default namespace"
+    );
 }
 
 #[test]
@@ -379,6 +403,104 @@ fn where_filters_by_rel() {
     let edges = json["edges"].as_array().unwrap();
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0]["rel"], "risk");
+}
+
+#[test]
+fn record_flag_form_succeeds_and_sloppy_forms_teach() {
+    // The write path a weak model guesses must succeed on attempt 1, and
+    // every classic failure must be a teaching error, not silent poison.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::write(dir.path().join("f.rs"), "a\nb\nc\nd\ne\nf\n").unwrap();
+
+    // The guessable form: flags, no JSON.
+    let output = damask()
+        .args([
+            "--format", "json", "record", "f.rs", "1", "3", "risk",
+            "-m", "token never expires", "-c", "0.9",
+            "--action", "add expiry", "--tag", "security",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let jsonl = fs::read_to_string(dir.path().join(".damask/edges/test.jsonl")).unwrap();
+    assert!(jsonl.contains("\"summary\":\"token never expires\""));
+    assert!(jsonl.contains("\"confidence\":0.9"));
+    assert!(jsonl.contains("\"action\":\"add expiry\""));
+    assert!(jsonl.contains("\"tags\":[\"security\"]"));
+
+    // -c out of range: clap rejects with a did-you-mean.
+    damask()
+        .args(["record", "f.rs", "1", "3", "risk", "-m", "x", "-c", "9"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("did you mean 0.9"));
+
+    // JSON confidence out of range: validated at write time.
+    damask()
+        .args(["record", "f.rs", "1", "3", "risk", r#"{"summary":"x","confidence":9}"#])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("did you mean 0.9"));
+
+    // String confidence: previously vanished from numeric predicates.
+    damask()
+        .args(["record", "f.rs", "1", "3", "risk", r#"{"summary":"x","confidence":"0.9"}"#])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("remove the quotes"));
+
+    // Hallucinated line range: previously created a dead span silently.
+    damask()
+        .args(["record", "f.rs", "100", "120", "risk", "-m", "x"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("past the end of f.rs (6 lines)"));
+
+    // Broken JSON teaches the flag form.
+    damask()
+        .args(["record", "f.rs", "1", "3", "risk", "{summary: 'oops'}"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("-m \"what you found\" -c 0.9"));
+
+    // No payload teaches the shortest correct invocation.
+    damask()
+        .args(["record", "f.rs", "1", "3", "risk"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("damask record f.rs 1 3 risk -m"));
+}
+
+#[test]
+fn batch_validates_payloads() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::write(dir.path().join("f.rs"), "a\nb\n").unwrap();
+
+    let batch = r#"[{"span":{"path":"f.rs","start":1,"end":2}},{"edge":{"from":"$0","to":"_","rel":"risk","payload":{"summary":"x","confidence":9}}}]"#;
+    damask()
+        .args(["batch", "--stdin"])
+        .write_stdin(batch)
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("item 1"))
+        .stderr(predicate::str::contains("did you mean 0.9"));
+
+    // Nothing should have been written (atomic batch).
+    let jsonl = fs::read_to_string(dir.path().join(".damask/edges/test.jsonl"))
+        .unwrap_or_default();
+    assert!(!jsonl.contains("confidence"), "failed batch must write nothing");
 }
 
 #[test]
@@ -1470,6 +1592,137 @@ fn init_claude_installs_hooks() {
     assert_eq!(doc["hooks"]["Stop"].as_array().unwrap().len(), 1);
     assert_eq!(doc["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
     assert_eq!(doc["hooks"]["UserPromptSubmit"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn bare_init_in_claude_session_installs_the_loop() {
+    // The primary adopter of `damask init` is the agent itself. Inside a
+    // live Claude Code session (CLAUDECODE env), bare init must install
+    // the full loop — no --claude flag knowledge required — and print an
+    // inline warm start plus the commit hint.
+    let dir = TempDir::new().unwrap();
+
+    damask()
+        .arg("init")
+        .env("CLAUDECODE", "1")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Hooks installed"))
+        .stdout(predicate::str::contains("Warm start for this session"))
+        .stdout(predicate::str::contains("git add .damask .claude"));
+
+    assert!(dir.path().join(".claude/skills/damask/SKILL.md").is_file());
+    assert!(dir.path().join(".claude/settings.json").is_file());
+
+    // Without the env (and without .claude/), bare init stays agent-free.
+    let dir2 = TempDir::new().unwrap();
+    damask()
+        .arg("init")
+        .current_dir(dir2.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No AI agent directories detected"));
+    assert!(!dir2.path().join(".claude").exists());
+}
+
+#[test]
+fn bootstrap_seeds_and_is_idempotent() {
+    let dir = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {:?} failed", args);
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"acme\"\ndescription = \"Test API\"\n",
+    )
+    .unwrap();
+    fs::write(dir.path().join("a.rs"), "// TODO: fix this later\nfn x() {}\n").unwrap();
+    fs::write(dir.path().join("b.rs"), "fn y() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "c1"]);
+    // Co-change history: a.rs + b.rs together three more times.
+    for i in 0..3 {
+        fs::write(dir.path().join("a.rs"), format!("// TODO: fix this later\nfn x() {{}} // {i}\n")).unwrap();
+        fs::write(dir.path().join("b.rs"), format!("fn y() {{}} // {i}\n")).unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "co"]);
+    }
+    init_project(&dir);
+
+    damask()
+        .arg("bootstrap")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("manifest describes"))
+        .stdout(predicate::str::contains("TODO/FIXME gotchas"))
+        .stdout(predicate::str::contains("co-change pairs"));
+
+    let jsonl = fs::read_to_string(dir.path().join(".damask/edges/bootstrap.jsonl")).unwrap();
+    assert!(jsonl.contains("\"agent\":\"damask-bootstrap\""), "bootstrap must stamp its agent");
+    assert!(jsonl.contains("acme: Test API"), "manifest name/description extracted");
+    assert!(jsonl.contains("TODO: fix this later"), "TODO comment becomes gotcha");
+    assert!(jsonl.contains("\"status\":\"hypothesis\""), "seeds are hypotheses");
+    assert!(jsonl.contains("changed together in"), "co-change pair recorded");
+
+    // Idempotent without --force.
+    damask()
+        .arg("bootstrap")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Already bootstrapped"));
+
+    // --force regenerates rather than appending duplicates.
+    damask()
+        .args(["bootstrap", "--force"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Bootstrapped"));
+    let regenerated = fs::read_to_string(dir.path().join(".damask/edges/bootstrap.jsonl")).unwrap();
+    let count = |s: &str| s.matches("\"rel\":\"describes\"").count();
+    assert_eq!(count(&jsonl), count(&regenerated), "--force must not duplicate facts");
+
+    // Session-1 payoff: peek on the TODO file injects the gotcha.
+    damask()
+        .args(["peek", "--file", "a.rs", "--session", "s1"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("TODO: fix this later"));
+}
+
+#[test]
+fn empty_briefing_advertises_bootstrap() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    damask()
+        .arg("briefing")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("damask bootstrap"));
+}
+
+#[test]
+fn init_gitignores_active_ns() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    let gitignore = fs::read_to_string(dir.path().join(".damask/.gitignore")).unwrap();
+    assert!(
+        gitignore.lines().any(|l| l == ".active_ns"),
+        ".active_ns is per-checkout state and must not be committed"
+    );
 }
 
 #[test]

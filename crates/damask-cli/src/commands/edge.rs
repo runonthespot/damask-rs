@@ -7,6 +7,7 @@ use super::helpers;
 use crate::error::Result;
 use crate::output::Format;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     from: &str,
     to: &str,
@@ -14,6 +15,10 @@ pub fn run(
     payload: Option<&str>,
     payload_file: Option<&str>,
     stdin: bool,
+    summary: Option<&str>,
+    confidence: Option<f64>,
+    action: Option<&str>,
+    tags: &[String],
     ns_override: Option<&str>,
     format: Format,
 ) -> Result<()> {
@@ -27,7 +32,15 @@ pub fn run(
     let from_id = helpers::parse_endpoint(from).context("invalid 'from' ID")?;
     let to_id = helpers::parse_endpoint(to).context("invalid 'to' ID")?;
 
-    let payload_value = helpers::resolve_payload(payload, payload_file, stdin)?;
+    let payload_value = helpers::compose_payload(
+        payload,
+        payload_file,
+        stdin,
+        summary,
+        confidence,
+        action,
+        tags,
+    )?;
 
     let edge = helpers::build_edge(from_id, to_id, rel, payload_value, &ns);
 

@@ -27,11 +27,10 @@ damask follow <span_id>             # traverse edge graph
 
 **3. Record** — preserve findings as you work:
 ```bash
-damask record src/auth.rs 42 67 risk \
-  '{"summary":"No rate limiting on login","confidence":0.9,"action":"Add rate limiter"}' \
-  --symbol handle_login
+damask record src/auth.rs 42 67 risk -m "No rate limiting on login" -c 0.9 \
+  --action "Add rate limiter" --symbol handle_login
 ```
-Payload requires `summary` + `confidence`. Run `damask help record` for full payload schema.
+`-m` is the summary, `-c` confidence (0.0-1.0). Inline JSON payloads also work for richer fields — run `damask help record` for the full schema.
 
 **4. Signal** — maintain graph quality:
 ```bash

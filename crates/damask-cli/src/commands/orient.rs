@@ -365,7 +365,8 @@ fn print_human(data: &OrientData) {
         println!("Damask: empty graph (cold start)");
         println!("{bar}");
         println!("  No edges found. This is a fresh codebase.");
-        println!("  Use `damask span` and `damask edge` to start recording.");
+        println!("  Seed instantly: `damask bootstrap` (manifests, TODOs, co-change history)");
+        println!("  Record findings: `damask record <file> <start> <end> <rel> -m \"...\" -c 0.8`");
         println!();
         return;
     }

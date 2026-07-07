@@ -273,6 +273,102 @@ pub fn parse_endpoint(s: &str) -> Result<Option<DamaskId>> {
     }
 }
 
+/// Validate payload fields damask consumes downstream. Catches the silent
+/// poisons at write time: an out-of-range confidence ranks above every
+/// legitimate fact forever; a string confidence silently vanishes from
+/// numeric predicates; and `lint` flags neither.
+pub fn validate_payload(value: &serde_json::Value) -> Result<()> {
+    let Some(obj) = value.as_object() else {
+        return Ok(());
+    };
+    if let Some(c) = obj.get("confidence") {
+        match c.as_f64() {
+            Some(f) if (0.0..=1.0).contains(&f) => {}
+            Some(f) => {
+                let hint = if f > 1.0 && f <= 10.0 {
+                    format!(" — did you mean {}?", f / 10.0)
+                } else if f > 10.0 && f <= 100.0 {
+                    format!(" — did you mean {}?", f / 100.0)
+                } else {
+                    String::new()
+                };
+                bail!("confidence must be between 0.0 and 1.0 (got {f}{hint})");
+            }
+            None => {
+                if let Some(s) = c.as_str() {
+                    if s.parse::<f64>().is_ok() {
+                        bail!(
+                            "confidence must be a JSON number, not a string \
+                             (got \"{s}\" — remove the quotes)"
+                        );
+                    }
+                }
+                bail!("confidence must be a number between 0.0 and 1.0 (got {c})");
+            }
+        }
+    }
+    if let Some(s) = obj.get("summary") {
+        if !s.is_string() {
+            bail!("summary must be a string (got {s})");
+        }
+    }
+    if let Some(t) = obj.get("tags") {
+        if !t.is_array() {
+            bail!("tags must be an array of strings (got {t})");
+        }
+    }
+    Ok(())
+}
+
+/// Payload from JSON sources merged with flag-provided fields (flags win),
+/// then validated. The flag path is the one a model guesses from `git
+/// commit -m` muscle memory — it must succeed on attempt 1, and a failed
+/// JSON payload must teach it.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_payload(
+    inline: Option<&str>,
+    file: Option<&str>,
+    stdin: bool,
+    summary: Option<&str>,
+    confidence: Option<f64>,
+    action: Option<&str>,
+    tags: &[String],
+) -> Result<serde_json::Value> {
+    let mut value = resolve_payload(inline, file, stdin).map_err(|e| {
+        if inline.is_some() {
+            anyhow::anyhow!(
+                "{e:#}\n  tip: you can skip JSON entirely — \
+                 use -m \"what you found\" -c 0.9 instead of a JSON payload"
+            )
+        } else {
+            e
+        }
+    })?;
+
+    let has_flags =
+        summary.is_some() || confidence.is_some() || action.is_some() || !tags.is_empty();
+    if has_flags {
+        let Some(obj) = value.as_object_mut() else {
+            bail!("payload must be a JSON object to combine with -m/-c/--action/--tag flags");
+        };
+        if let Some(s) = summary {
+            obj.insert("summary".to_string(), serde_json::json!(s));
+        }
+        if let Some(c) = confidence {
+            obj.insert("confidence".to_string(), serde_json::json!(c));
+        }
+        if let Some(a) = action {
+            obj.insert("action".to_string(), serde_json::json!(a));
+        }
+        if !tags.is_empty() {
+            obj.insert("tags".to_string(), serde_json::json!(tags));
+        }
+    }
+
+    validate_payload(&value)?;
+    Ok(value)
+}
+
 /// Resolve the payload from inline JSON, a file, stdin, or default to empty object.
 pub fn resolve_payload(
     inline: Option<&str>,
@@ -311,6 +407,10 @@ pub fn resolve_payload(
 }
 
 /// Build a complete Span from parameters, computing content hash and git commit.
+///
+/// When the file exists, the line range is bounds-checked against it: a
+/// hallucinated range would otherwise create a span that silently skips
+/// the resolution cascade forever.
 pub fn build_span(
     project: &DamaskProject,
     file: &str,
@@ -321,6 +421,19 @@ pub fn build_span(
 ) -> Result<Span> {
     let file_path = project.root.join(file);
     let (snippet, content_hash) = if file_path.exists() {
+        let line_count = std::fs::read_to_string(&file_path)
+            .context("failed to read file")?
+            .lines()
+            .count() as u32;
+        if start > line_count {
+            bail!("line {start} is past the end of {file} ({line_count} lines)");
+        }
+        if end > line_count {
+            bail!(
+                "line range {start}-{end} exceeds {file} ({line_count} lines) — \
+                 use {start}-{line_count} to annotate through the end of the file"
+            );
+        }
         extract_span_content(&file_path, start, end)?
     } else {
         (None, None)

@@ -7,12 +7,19 @@ use super::helpers;
 use crate::error::Result;
 use crate::output::Format;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     file: &str,
     start: u32,
     end: u32,
     rel: &str,
-    payload: &str,
+    payload: Option<&str>,
+    payload_file: Option<&str>,
+    stdin: bool,
+    summary: Option<&str>,
+    confidence: Option<f64>,
+    action: Option<&str>,
+    tags: &[String],
     symbol: Option<&str>,
     to: &str,
     ns_override: Option<&str>,
@@ -23,6 +30,14 @@ pub fn run(
     }
     if start == 0 {
         bail!("lines are 1-indexed; start must be >= 1");
+    }
+    // A record without any payload source has nothing to say — teach the
+    // shortest correct form at the moment of need.
+    if payload.is_none() && payload_file.is_none() && !stdin && summary.is_none() {
+        bail!(
+            "record needs a payload — the simplest form:\n  \
+             damask record {file} {start} {end} {rel} -m \"what you found\" -c 0.9"
+        );
     }
 
     let cwd = env::current_dir().context("failed to get current directory")?;
@@ -38,9 +53,16 @@ pub fn run(
         bail!("file not found: {file}");
     }
 
-    // Parse payload before building anything
-    let payload_value: serde_json::Value =
-        serde_json::from_str(payload).context("payload is not valid JSON")?;
+    // Compose payload from JSON sources + flags before building anything
+    let payload_value = helpers::compose_payload(
+        payload,
+        payload_file,
+        stdin,
+        summary,
+        confidence,
+        action,
+        tags,
+    )?;
 
     // Parse --to endpoint
     let to_id = helpers::parse_endpoint(to).context("invalid '--to' ID")?;

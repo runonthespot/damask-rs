@@ -1,3 +1,4 @@
+.active_ns
 index.db
 index.db-wal
 index.db-shm

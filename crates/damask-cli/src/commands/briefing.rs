@@ -75,12 +75,17 @@ fn render_markdown(data: &OrientData) -> String {
         let _ = writeln!(md, "## Damask knowledge graph\n");
         let _ = writeln!(
             md,
-            "This repo uses damask but the graph is empty (cold start). When you discover \
-             something durable — a risk, gotcha, decision, or dependency — record it:\n"
+            "This repo uses damask but the graph is empty (cold start). Seed it instantly \
+             from manifests, TODO/FIXME comments, and git co-change history:\n"
+        );
+        let _ = writeln!(md, "    damask bootstrap\n");
+        let _ = writeln!(
+            md,
+            "Then record what you discover as you work — a risk, gotcha, decision, or dependency:\n"
         );
         let _ = writeln!(
             md,
-            "    damask record <file> <start> <end> <rel> '{{\"summary\":\"...\",\"confidence\":0.8}}'\n"
+            "    damask record <file> <start> <end> <rel> -m \"what you found\" -c 0.8\n"
         );
         let _ = writeln!(md, "Run `damask help cold-start` for the first-pass playbook.");
         return md;

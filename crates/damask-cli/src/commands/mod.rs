@@ -1,6 +1,7 @@
 pub mod at;
 pub mod batch;
 pub mod blame;
+pub mod bootstrap;
 pub mod briefing;
 pub mod close;
 pub mod compact;

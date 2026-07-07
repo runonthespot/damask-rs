@@ -4,7 +4,7 @@
       {
         "hooks": [
           {
-            "command": "damask peek",
+            "command": "! command -v damask >/dev/null 2>&1 || damask peek",
             "type": "command"
           }
         ],
@@ -15,7 +15,7 @@
       {
         "hooks": [
           {
-            "command": "damask briefing",
+            "command": "if command -v damask >/dev/null 2>&1; then damask briefing; else echo 'This repo has a damask knowledge graph (.damask/) shared across agent sessions. Install the damask CLI to inherit it: cargo install damask'; fi",
             "type": "command"
           }
         ],
@@ -26,7 +26,7 @@
       {
         "hooks": [
           {
-            "command": "damask harvest",
+            "command": "! command -v damask >/dev/null 2>&1 || damask harvest",
             "type": "command"
           }
         ]
@@ -36,7 +36,7 @@
       {
         "hooks": [
           {
-            "command": "damask peek",
+            "command": "! command -v damask >/dev/null 2>&1 || damask peek",
             "type": "command"
           }
         ]
