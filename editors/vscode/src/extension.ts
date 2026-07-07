@@ -258,7 +258,7 @@ class EdgeItem extends vscode.TreeItem {
       (isRuledOut(edge) ? " (ruled out)" : "");
     const dot = FRESHNESS_DOT[worstFreshness(anchors)];
     super(
-      rowLabel(summary(edge)),
+      `${dot ? dot + " " : ""}${rowLabel(summary(edge))}`,
       anchors.length > 0
         ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None
@@ -273,7 +273,7 @@ class EdgeItem extends vscode.TreeItem {
         : "";
     this.description = `${edge.rel}${
       conf !== undefined ? ` ${conf.toFixed(2)}` : ""
-    }${marks}${link}${tagChips(tags(edge))}${dot ? ` ${dot}` : ""}`;
+    }${marks}${link}${tagChips(tags(edge))}`;
     // Full payload, pretty-printed — the hover is the edge's detail view.
     const md = new vscode.MarkdownString(
       `**${edge.rel}** ${conf !== undefined ? `(${conf})` : ""}${marks}\n\n` +
