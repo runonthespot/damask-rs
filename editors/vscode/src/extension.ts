@@ -157,14 +157,16 @@ class EdgeItem extends vscode.TreeItem {
     this.description = `${edge.rel}${
       conf !== undefined ? ` ${conf.toFixed(2)}` : ""
     }${marks}`;
-    this.tooltip = new vscode.MarkdownString(
+    // Full payload, pretty-printed — the hover is the edge's detail view.
+    const md = new vscode.MarkdownString(
       `**${edge.rel}** ${conf !== undefined ? `(${conf})` : ""}${marks}\n\n` +
-        `${summary(edge)}\n\n` +
-        (typeof edge.payload?.["action"] === "string"
-          ? `**action:** ${edge.payload["action"]}\n\n`
-          : "") +
+        "```json\n" +
+        JSON.stringify(edge.payload, null, 2) +
+        "\n```\n\n" +
         `\`${edge.id}\` · ${edge.ns} · ${edge.ts.split("T")[0]}`
     );
+    md.supportHtml = false;
+    this.tooltip = md;
     this.iconPath = new vscode.ThemeIcon(
       edge.is_closed
         ? "archive"
@@ -187,6 +189,26 @@ class EdgeItem extends vscode.TreeItem {
       };
     }
     this.contextValue = "damaskEdge";
+  }
+}
+
+class RelGroupItem extends vscode.TreeItem {
+  constructor(public readonly rel: string, public readonly edges: EdgeFact[]) {
+    super(`${rel} (${edges.length})`, vscode.TreeItemCollapsibleState.Collapsed);
+    this.iconPath = new vscode.ThemeIcon(
+      rel === "risk"
+        ? "warning"
+        : rel === "gotcha"
+        ? "flame"
+        : rel === "decision" || rel === "invariant"
+        ? "law"
+        : rel === "describes"
+        ? "book"
+        : rel === "contradicts"
+        ? "git-compare"
+        : "link"
+    );
+    this.contextValue = "damaskRelGroup";
   }
 }
 
@@ -245,7 +267,26 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     return element;
   }
 
+  private edgeItem(e: EdgeFact): EdgeItem {
+    const anchors = [e.from, e.to]
+      .filter((id): id is string => !!id && id.startsWith("s_"))
+      .map((id) => this.graph!.spans.get(id))
+      .filter((s): s is SpanFact => !!s);
+    return new EdgeItem(
+      e,
+      anchors,
+      this.graph!.endorsements.get(e.id) ?? 0,
+      this.graph!.disputes.get(e.id) ?? 0
+    );
+  }
+
   getChildren(element?: vscode.TreeItem): vscode.TreeItem[] {
+    if (element instanceof RelGroupItem) {
+      // Within a type: confidence descending — best findings first.
+      return element.edges
+        .sort((a, b) => (confidence(b) ?? 0) - (confidence(a) ?? 0))
+        .map((e) => this.edgeItem(e));
+    }
     if (element instanceof EdgeItem) {
       const roles =
         element.anchors.length === 2 ? ["from", "to"] : ["anchor"];
@@ -269,28 +310,21 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
       return [new vscode.TreeItem("No .damask/ graph in this workspace")];
     }
 
-    // Top level: the edges themselves — judgment rels first, then
-    // confidence descending, mirroring the CLI's honest ordering.
-    const edges = this.graph.edges
-      .filter((e) => this.showClosed || !e.is_closed)
-      .sort((a, b) => {
-        const r = relRank(a.rel) - relRank(b.rel);
-        if (r !== 0) return r;
-        return (confidence(b) ?? 0) - (confidence(a) ?? 0);
-      });
-
-    return edges.map((e) => {
-      const anchors = [e.from, e.to]
-        .filter((id): id is string => !!id && id.startsWith("s_"))
-        .map((id) => this.graph!.spans.get(id))
-        .filter((s): s is SpanFact => !!s);
-      return new EdgeItem(
-        e,
-        anchors,
-        this.graph!.endorsements.get(e.id) ?? 0,
-        this.graph!.disputes.get(e.id) ?? 0
-      );
-    });
+    // Top level: one group per edge type — judgment rels first, ties
+    // broken by size, mirroring orient's sectioning.
+    const byRel = new Map<string, EdgeFact[]>();
+    for (const e of this.graph.edges) {
+      if (!this.showClosed && e.is_closed) continue;
+      const bucket = byRel.get(e.rel);
+      if (bucket) bucket.push(e);
+      else byRel.set(e.rel, [e]);
+    }
+    return [...byRel.entries()]
+      .sort(
+        ([relA, edgesA], [relB, edgesB]) =>
+          relRank(relA) - relRank(relB) || edgesB.length - edgesA.length
+      )
+      .map(([rel, edges]) => new RelGroupItem(rel, edges));
   }
 }
 
