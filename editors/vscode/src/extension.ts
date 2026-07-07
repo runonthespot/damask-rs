@@ -501,16 +501,34 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
 
 export function activate(context: vscode.ExtensionContext): void {
   const provider = new DamaskTreeProvider();
+
+  // Closed-edge visibility: stateful, visible, remembered per workspace.
+  const applyShowClosed = (value: boolean) => {
+    provider.showClosed = value;
+    void context.workspaceState.update("damask.showClosed", value);
+    void vscode.commands.executeCommand(
+      "setContext",
+      "damaskShowClosed",
+      value
+    );
+    provider.repaint();
+  };
+  applyShowClosed(
+    context.workspaceState.get<boolean>("damask.showClosed", false)
+  );
+
   context.subscriptions.push(
     vscode.window.createTreeView("damaskGraph", {
       treeDataProvider: provider,
       showCollapseAll: true,
     }),
     vscode.commands.registerCommand("damask.refresh", () => provider.refresh()),
-    vscode.commands.registerCommand("damask.showClosed", () => {
-      provider.showClosed = !provider.showClosed;
-      provider.refresh();
-    }),
+    vscode.commands.registerCommand("damask.showClosed", () =>
+      applyShowClosed(true)
+    ),
+    vscode.commands.registerCommand("damask.hideClosed", () =>
+      applyShowClosed(false)
+    ),
     vscode.commands.registerCommand("damask.search", async () => {
       const q = await vscode.window.showInputBox({
         prompt: "Search the knowledge graph (summaries, payloads, tags, paths)",
