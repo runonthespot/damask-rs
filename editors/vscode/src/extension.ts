@@ -19,8 +19,53 @@ interface SpanFact {
   path: string;
   line_start: number | null;
   line_end: number | null;
+  resolution: string | null;
+  recency: string | null;
   ns: string;
   ts: string;
+}
+
+/** Traffic-light freshness from the resolver's verdict: green = content
+ * hash still matches in place; amber = found but moved, or the file has
+ * changed since recording; red = the anchor no longer exists. */
+type Freshness = "fresh" | "drifted" | "gone" | "unknown";
+
+function spanFreshness(s: SpanFact | undefined): Freshness {
+  if (!s || !s.resolution) return "unknown";
+  if (s.resolution === "missing" || s.resolution === "unresolved") return "gone";
+  if (s.resolution === "relocated" || s.recency === "file_changed") return "drifted";
+  if (s.resolution === "exact") return "fresh";
+  return "unknown";
+}
+
+const FRESHNESS_DOT: Record<Freshness, string> = {
+  fresh: "🟢",
+  drifted: "🟠",
+  gone: "🔴",
+  unknown: "",
+};
+
+const FRESHNESS_WORD: Record<Freshness, string> = {
+  fresh: "fresh",
+  drifted: "code drifted",
+  gone: "anchor gone",
+  unknown: "",
+};
+
+const FRESHNESS_COLOR: Record<Freshness, string> = {
+  fresh: "charts.green",
+  drifted: "charts.yellow",
+  gone: "charts.red",
+  unknown: "disabledForeground",
+};
+
+/** Worst-of for an edge's anchors: one bad endpoint taints the finding. */
+function worstFreshness(anchors: SpanFact[]): Freshness {
+  const order: Freshness[] = ["gone", "drifted", "fresh"];
+  for (const level of order) {
+    if (anchors.some((a) => spanFreshness(a) === level)) return level;
+  }
+  return "unknown";
 }
 
 interface EdgeFact {
@@ -198,8 +243,9 @@ class EdgeItem extends vscode.TreeItem {
       (disputed > 0 ? ` ×${disputed}✗` : "") +
       (edge.is_closed ? " (closed)" : "") +
       (isRuledOut(edge) ? " (ruled out)" : "");
+    const dot = FRESHNESS_DOT[worstFreshness(anchors)];
     super(
-      `${summary(edge)}`,
+      `${dot ? dot + " " : ""}${summary(edge)}`,
       anchors.length > 0
         ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None
@@ -300,10 +346,12 @@ class AnchorItem extends vscode.TreeItem {
         ? `:${span.line_start}-${span.line_end}`
         : "";
     super(`${span.path}${lines}`, vscode.TreeItemCollapsibleState.None);
-    this.description = role;
+    const fresh = spanFreshness(span);
+    const word = FRESHNESS_WORD[fresh];
+    this.description = word ? `${role} · ${word}` : role;
     this.iconPath = new vscode.ThemeIcon(
-      "location",
-      new vscode.ThemeColor("charts.green")
+      "circle-filled",
+      new vscode.ThemeColor(FRESHNESS_COLOR[fresh])
     );
     this.tooltip = `${span.id}\n${span.path}${lines}`;
     this.command = {

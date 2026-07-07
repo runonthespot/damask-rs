@@ -50,6 +50,8 @@ pub fn run(format: Format, limit: usize, since: Option<&str>) -> Result<()> {
                 "path": span.path,
                 "line_start": span.line_start,
                 "line_end": span.line_end,
+                "resolution": span.resolution,
+                "recency": span.recency,
                 "ns": span.ns,
                 "ts": span.ts,
             }),
