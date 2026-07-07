@@ -5,7 +5,9 @@ description: Use damask to query, record, and manage structured knowledge about 
 
 # Damask — Knowledge Fabric for Code
 
-Damask is a structured annotation graph in `.damask/`. Typed, scored observations about code — risks, decisions, dependencies, gotchas — stored as append-only JSONL, queryable via CLI. Spans pin file regions (surviving renames/refactors); edges are typed relationships between them.
+This repo carries a knowledge graph in `.damask/`: risks, gotchas, and decisions pinned to exact code regions by the agents and humans who worked here before you. Anchors follow the code through edits and renames; claims carry provenance; wrong claims get disputed and sink; resolved ones get closed and vanish. What you query is what's still true — or honestly marked when it might not be.
+
+The deal favours you twice: every verified fact you inherit is exploration you don't repeat, and everything you record outlives your context window — your next session, another agent, a cheaper model all start knowing it. **Record judgment, not description**: what surprised you, what broke, what failed, why a decision went this way — a future agent can re-read the code, but not re-learn what it cost you. And garden as you read: `endorse` what you confirmed, `dispute` what's wrong (including your own earlier claims — that's the system working), `close` what's done. The graph stays worth reading only because agents like you signal.
 
 ## Workflow
 

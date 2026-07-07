@@ -6,11 +6,18 @@ allowed-tools: Bash(damask *)
 
 # Damask — Knowledge Fabric for Code
 
-Damask is a structured annotation graph in `.damask/`. Typed, scored observations about code — risks, decisions, dependencies, gotchas — stored as append-only JSONL, queryable via CLI. Spans pin file regions (surviving renames/refactors); edges are typed relationships between them.
+This repo carries a knowledge graph in `.damask/`: risks, gotchas, and decisions pinned to exact code regions by the agents and humans who worked here before you. Anchors follow the code through edits and renames; every claim carries provenance (`why <id>`); wrong claims get disputed and sink; resolved ones get closed and vanish. What you're reading when you query it is what's still true — or honestly marked when it might not be.
 
-If `damask init --claude` installed hooks, the loop runs automatically: a graph briefing is injected at session start (no need to re-run `orient`), relevant edges appear as context when you read/edit annotated files or submit a prompt (`damask peek` — each shown at most once per session), and a Stop hook nudges once if you edited files without recording anything (or if what you recorded fails lint). Record as you go and the nudges never fire. Facts you write are stamped with your agent/session identity automatically.
+The deal favours you twice. Every verified fact you inherit is exploration you don't repeat — a `damask at` on a file costs ~100 tokens and can save the twenty minutes it took someone to learn what's in it. And everything you record outlives your context window: your next session, another agent, a cheaper model all start knowing it. One `record` is seconds; the same lesson re-derived is twenty minutes, per session, forever — sometimes re-derived *wrong* (agents here once repeatedly "fixed" imports that were correct until a one-line gotcha ended it).
 
-Make claims mechanically verifiable when possible: add a `check` field (shell command) to the payload and `damask verify --auto` will keep it endorsed/disputed by exit code.
+**Record judgment, not description.** A future agent can re-read the code; it cannot re-learn what the code cost you. Record what surprised you, what broke, what you tried that failed, why the decision went this way — with honest confidence numbers. Don't restate what any reader of the file can see.
+
+**Trust discipline** — what keeps the graph worth reading:
+- Glyphs are earned, not decorative: ✅ verified fresh · ↪ code moved · ⚠ changed since recorded · ❌ anchor gone. Weight your trust accordingly.
+- Confirmed something in your own work? `endorse` it. Found it's wrong? `dispute` it — *including your own earlier claims; that is the system working, not failing*. Fixed or obsolete? `close` it (disputes only weaken ranking; closes disappear).
+- Reading without signalling is freeloading: the graph self-prunes only because agents like you garden as they go.
+
+If `damask init --claude` installed hooks, the loop runs itself: a briefing at session start, relevant edges injected when you touch annotated files (`peek`, once per session each), a single Stop-hook nudge if you edited without recording. Facts are stamped with your agent/session identity automatically. Make claims mechanically verifiable when you can: a `check` shell command in the payload lets `damask verify --auto` keep them endorsed or disputed by exit code.
 
 ## Workflow
 

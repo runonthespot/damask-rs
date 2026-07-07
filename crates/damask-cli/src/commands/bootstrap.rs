@@ -34,11 +34,16 @@ const COCHANGE_MAX: usize = 10;
 /// operations (renames, formatting sweeps) that say nothing about coupling.
 const COCHANGE_COMMIT_CAP: usize = 20;
 
-/// Root manifests worth describing, with a human label.
+/// Root manifests worth describing, with a human label. README is included
+/// deliberately: in a sparse repo it is often the only seedable anchor,
+/// and "start here" is exactly what a cold session needs.
 const MANIFESTS: &[(&str, &str)] = &[
     ("Cargo.toml", "Rust workspace/crate manifest"),
     ("package.json", "Node package manifest"),
     ("pyproject.toml", "Python project manifest"),
+    ("setup.py", "Python package setup"),
+    ("setup.cfg", "Python package configuration"),
+    ("requirements.txt", "Python dependency list"),
     ("go.mod", "Go module manifest"),
     ("Gemfile", "Ruby dependency manifest"),
     ("pom.xml", "Maven build manifest"),
@@ -46,6 +51,7 @@ const MANIFESTS: &[(&str, &str)] = &[
     ("Makefile", "Build entry point"),
     ("Dockerfile", "Container build definition"),
     ("docker-compose.yml", "Service topology definition"),
+    ("README.md", "Project overview — start here"),
 ];
 
 pub fn run(force: bool, format: Format) -> Result<()> {
