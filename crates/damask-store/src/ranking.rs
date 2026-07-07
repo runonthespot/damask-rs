@@ -92,6 +92,16 @@ pub fn rank_edge(input: &RankingInput) -> f64 {
         _ => 1.0,
     };
 
+    // Signal 10: Severity — how much it matters, orthogonal to confidence.
+    // Modest: severity orders attention, it must not drown out freshness
+    // or trust.
+    let severity_factor = match payload.get("severity").and_then(|v| v.as_str()) {
+        Some("critical") => 1.12,
+        Some("high") => 1.06,
+        Some("low") => 0.92,
+        _ => 1.0,
+    };
+
     // Composite score: weighted sum of domain-neutral signals
     (resolution_score * 0.15
         + confidence_score * 0.20
@@ -102,6 +112,7 @@ pub fn rank_edge(input: &RankingInput) -> f64 {
         + decay_score * 0.15
         + source_score * 0.05)
         * status_factor
+        * severity_factor
 }
 
 /// Rank a list of edges and return them sorted by score (highest first).

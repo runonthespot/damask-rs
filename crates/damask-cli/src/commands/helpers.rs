@@ -410,6 +410,7 @@ pub fn compose_payload(
     summary: Option<&str>,
     confidence: Option<f64>,
     action: Option<&str>,
+    severity: Option<&str>,
     tags: &[String],
 ) -> Result<serde_json::Value> {
     let mut value = resolve_payload(inline, file, stdin).map_err(|e| {
@@ -423,8 +424,11 @@ pub fn compose_payload(
         }
     })?;
 
-    let has_flags =
-        summary.is_some() || confidence.is_some() || action.is_some() || !tags.is_empty();
+    let has_flags = summary.is_some()
+        || confidence.is_some()
+        || action.is_some()
+        || severity.is_some()
+        || !tags.is_empty();
     if has_flags {
         let Some(obj) = value.as_object_mut() else {
             bail!("payload must be a JSON object to combine with -m/-c/--action/--tag flags");
@@ -437,6 +441,9 @@ pub fn compose_payload(
         }
         if let Some(a) = action {
             obj.insert("action".to_string(), serde_json::json!(a));
+        }
+        if let Some(sv) = severity {
+            obj.insert("severity".to_string(), serde_json::json!(sv));
         }
         if !tags.is_empty() {
             obj.insert("tags".to_string(), serde_json::json!(tags));

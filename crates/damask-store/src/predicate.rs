@@ -5,7 +5,7 @@ use crate::StoreError;
 
 /// Valid field names for predicates.
 const KNOWN_FIELDS: &[&str] = &[
-    "rel", "ns", "agent", "endorsed", "disputed", "confidence", "status", "summary", "tags",
+    "rel", "ns", "agent", "endorsed", "disputed", "confidence", "status", "severity", "summary", "tags",
     "lifecycle",
 ];
 
@@ -132,6 +132,12 @@ impl Predicate {
                 } else {
                     false
                 }
+            }
+            "severity" => {
+                let payload: serde_json::Value =
+                    serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+                let env = PayloadEnvelope::new(&payload);
+                self.compare_str(env.severity().unwrap_or(""))
             }
             "status" => {
                 let payload: serde_json::Value =

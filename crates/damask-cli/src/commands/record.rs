@@ -19,6 +19,7 @@ pub fn run(
     summary: Option<&str>,
     confidence: Option<f64>,
     action: Option<&str>,
+    severity: Option<&str>,
     tags: &[String],
     symbol: Option<&str>,
     to: &str,
@@ -61,6 +62,7 @@ pub fn run(
         summary,
         confidence,
         action,
+        severity,
         tags,
     )?;
 

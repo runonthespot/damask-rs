@@ -1902,6 +1902,66 @@ fn sweep_reports_and_reanchors_drifted_spans() {
 }
 
 #[test]
+fn severity_is_first_class_and_reasons_are_free_text() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::write(dir.path().join("f.rs"), "a\nb\nc\n").unwrap();
+
+    damask()
+        .args(["record", "f.rs", "1", "1", "risk", "-m", "certain but harmless",
+               "-c", "0.95", "--severity", "low"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    damask()
+        .args(["record", "f.rs", "2", "2", "risk", "-m", "probable and terrible",
+               "-c", "0.7", "--severity", "critical"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Severity orders attention: critical leads despite lower confidence.
+    let out = damask()
+        .args(["--format", "json", "where", "rel=risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(out.stdout).unwrap()).unwrap();
+    assert_eq!(json["edges"][0]["payload"]["severity"], "critical");
+
+    // Filterable and marked.
+    damask()
+        .args(["where", "severity=critical"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[critical]"))
+        .stdout(predicate::str::contains("probable and terrible"));
+
+    // Invalid severity flag teaches.
+    damask()
+        .args(["record", "f.rs", "3", "3", "risk", "-m", "x", "--severity", "huge"])
+        .current_dir(dir.path())
+        .assert()
+        .failure();
+
+    // Free-text close reason lands verbatim.
+    let eid = json["edges"][1]["id"].as_str().unwrap();
+    damask()
+        .args(["close", eid, "--reason", "superseded by PR #42"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    damask()
+        .args(["log", "--limit", "0"])
+        .current_dir(dir.path())
+        .assert()
+        .stdout(predicate::str::contains("superseded by PR #42"));
+}
+
+#[test]
 fn log_is_bounded_by_default() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);

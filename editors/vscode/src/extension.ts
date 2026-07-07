@@ -251,7 +251,9 @@ class EdgeItem extends vscode.TreeItem {
     disputed: number
   ) {
     const conf = confidence(edge);
+    const sev = edge.payload?.["severity"];
     const marks =
+      (typeof sev === "string" ? ` [${sev}]` : "") +
       (endorsed > 0 ? ` ×${endorsed}✓` : "") +
       (disputed > 0 ? ` ×${disputed}✗` : "") +
       (edge.is_closed ? " (closed)" : "") +

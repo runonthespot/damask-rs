@@ -28,6 +28,12 @@ impl<'a> PayloadEnvelope<'a> {
         self.raw.get("status").and_then(|v| v.as_str())
     }
 
+    /// Severity: "critical", "high", "medium", or "low" — how much it
+    /// matters, orthogonal to confidence (how sure the author is).
+    pub fn severity(&self) -> Option<&str> {
+        self.raw.get("severity").and_then(|v| v.as_str())
+    }
+
     /// Supporting evidence (span IDs or text snippets).
     pub fn evidence(&self) -> Option<Vec<&str>> {
         self.raw.get("evidence").and_then(|v| {

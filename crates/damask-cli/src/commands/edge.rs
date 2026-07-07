@@ -18,6 +18,7 @@ pub fn run(
     summary: Option<&str>,
     confidence: Option<f64>,
     action: Option<&str>,
+    severity: Option<&str>,
     tags: &[String],
     ns_override: Option<&str>,
     format: Format,
@@ -39,6 +40,7 @@ pub fn run(
         summary,
         confidence,
         action,
+        severity,
         tags,
     )?;
 

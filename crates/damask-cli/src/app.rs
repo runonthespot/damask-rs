@@ -127,6 +127,10 @@ pub enum Command {
         #[arg(long)]
         action: Option<String>,
 
+        /// Payload severity: how much it matters (orthogonal to confidence).
+        #[arg(long, value_parser = ["critical", "high", "medium", "low"])]
+        severity: Option<String>,
+
         /// Payload tag (repeatable).
         #[arg(long = "tag")]
         tags: Vec<String>,
@@ -168,6 +172,10 @@ pub enum Command {
         /// Payload action: what should be done about it.
         #[arg(long)]
         action: Option<String>,
+
+        /// Payload severity: how much it matters (orthogonal to confidence).
+        #[arg(long, value_parser = ["critical", "high", "medium", "low"])]
+        severity: Option<String>,
 
         /// Payload tag (repeatable).
         #[arg(long = "tag")]
@@ -289,7 +297,8 @@ pub enum Command {
         payload: Option<String>,
 
         /// Use a reason template instead of raw JSON payload.
-        #[arg(long, value_parser = ["resolved", "fixed", "stale", "outdated", "incorrect", "duplicate"])]
+        /// Reason: templates (resolved, fixed, stale, outdated, incorrect, duplicate) or free text.
+        #[arg(long)]
         reason: Option<String>,
 
         /// Batch mode: read edge IDs from stdin, one per line.
@@ -344,7 +353,8 @@ pub enum Command {
         payload: Option<String>,
 
         /// Use a reason template instead of raw JSON payload.
-        #[arg(long, value_parser = ["resolved", "outdated", "incorrect", "duplicate", "accepted"])]
+        /// Reason: templates (resolved, outdated, incorrect, duplicate, accepted) or free text.
+        #[arg(long)]
         reason: Option<String>,
 
         /// Batch mode: read edge IDs from stdin, one per line.

@@ -427,6 +427,10 @@ fn print_human(
             .unwrap_or_default();
 
         // Terminal/humble statuses are schema — the read side says so.
+        let severity_str = env
+            .severity()
+            .map(|sv| format!(" [{sv}]"))
+            .unwrap_or_default();
         let status_str = match env.status() {
             Some("ruled_out") => " [ruled out]",
             Some("hypothesis") => " [hypothesis]",
@@ -464,10 +468,11 @@ fn print_human(
         let date = re.edge.ts.split('T').next().unwrap_or(&re.edge.ts);
 
         println!(
-            "  {}{}{}{}{}{}{}{} — {}",
+            "  {}{}{}{}{}{}{}{}{} — {}",
             rel_glyph,
             re.edge.rel,
             conf,
+            severity_str,
             status_str,
             endorsement_str,
             dispute_str,

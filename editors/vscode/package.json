@@ -2,7 +2,7 @@
   "name": "damask-vscode",
   "displayName": "Damask",
   "description": "Navigate your repo's damask knowledge graph: findings as edges, anchors as nodes, click-through to the exact code.",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "publisher": "damask",
   "license": "MIT",
   "repository": {

@@ -94,6 +94,7 @@ Always include `summary` and `confidence`. Add more fields to make findings acti
   - 0.5–0.7 = informed hypothesis (code suggests this)
   - <0.5 = speculation
 - **status**: `"assertion"` (default), `"hypothesis"`, `"ruled_out"`
+- **severity**: `"critical"`, `"high"`, `"medium"`, `"low"` — how much it MATTERS, orthogonal to confidence (how sure you are). Filterable: `where "severity=critical"`; nudges ranking modestly.
 - **action**: Be specific: "Add `if token.exp < now()` check at line 155" not "fix this"
 - **tags**: Lowercase, hyphenated. Used for `damask where "tags=security"`
 - **evidence**: IDs of spans or edges that support this finding

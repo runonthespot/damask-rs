@@ -45,7 +45,7 @@ If ck is installed, join code search with knowledge in one pipe:
 damask record src/auth.rs 42 67 risk -m "No rate limiting on login" -c 0.9 \
   --action "Add rate limiter" --symbol handle_login
 ```
-`-m` is the summary, `-c` confidence (0.0-1.0). Inline JSON payloads also work for richer fields — run `damask help record` for the full schema.
+`-m` is the summary, `-c` confidence (0.0-1.0), `--severity critical|high|medium|low` is how much it MATTERS — orthogonal to confidence (a 0.95-confidence dead-code finding is still low-severity). Filter with `damask where "severity=critical"`. Inline JSON payloads also work for richer fields — run `damask help record` for the full schema.
 
 **4. Signal** — maintain graph quality:
 ```bash
@@ -55,7 +55,9 @@ damask dispute <edge_id> --reason incorrect  # this is WRONG (use close for fixe
 damask confirm <span_or_edge_id>     # drifted anchor still true — re-anchors it, clears the ⚠
 damask triage                        # find rot, get ready-to-run bulk closes (never auto)
 ```
-Use `close` when a finding is resolved, `dispute` only when it is wrong. Investigated a risk and dismissed it? Record with `"status":"ruled_out"` (schema) — it sinks in every ranking and `damask triage --close-ruled-out` can retire it later.
+Use `close` when a finding is resolved, `dispute` only when it is wrong. `--reason` accepts the templates or any free text (`--reason "superseded by PR #42"`).
+
+**Fan-outs / parallel agents:** concurrent appends are torn-write-safe (single atomic write per batch — tested under 8 parallel writers). Per-agent namespaces are for ISOLATION of concerns, not safety. Never `ns set` in a parallel agent (it is a shared file); set the `DAMASK_NS` env var per process or pass `--ns` instead. Investigated a risk and dismissed it? Record with `"status":"ruled_out"` (schema) — it sinks in every ranking and `damask triage --close-ruled-out` can retire it later.
 
 ## Command Reference
 
