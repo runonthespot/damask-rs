@@ -167,9 +167,17 @@ class EdgeItem extends vscode.TreeItem {
         ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None
     );
+    // Span-links (two anchors) show their wiring inline: a.rs:67 → b.rs:38.
+    const base = (p: string) => p.split("/").pop() ?? p;
+    const link =
+      anchors.length === 2
+        ? ` ${base(anchors[0].path)}:${anchors[0].line_start ?? "?"} → ${base(
+            anchors[1].path
+          )}:${anchors[1].line_start ?? "?"}`
+        : "";
     this.description = `${edge.rel}${
       conf !== undefined ? ` ${conf.toFixed(2)}` : ""
-    }${marks}${tagChips(tags(edge))}`;
+    }${marks}${link}${tagChips(tags(edge))}`;
     // Full payload, pretty-printed — the hover is the edge's detail view.
     const md = new vscode.MarkdownString(
       `**${edge.rel}** ${conf !== undefined ? `(${conf})` : ""}${marks}\n\n` +
@@ -360,7 +368,7 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     }
     if (element instanceof EdgeItem) {
       const roles =
-        element.anchors.length === 2 ? ["from", "to"] : ["anchor"];
+        element.anchors.length === 2 ? ["from →", "→ to"] : ["anchor"];
       const anchorItems = element.anchors.map(
         (span, i) => new AnchorItem(span, roles[Math.min(i, roles.length - 1)])
       );
