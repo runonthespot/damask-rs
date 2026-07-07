@@ -136,6 +136,19 @@ function summary(e: EdgeFact): string {
   return typeof s === "string" ? s : JSON.stringify(e.payload).slice(0, 80);
 }
 
+function tags(e: EdgeFact): string[] {
+  const t = e.payload?.["tags"];
+  return Array.isArray(t) ? t.filter((x): x is string => typeof x === "string") : [];
+}
+
+/** `#security #todo +2` — chips, not a data structure. */
+function tagChips(list: string[], max = 3): string {
+  if (list.length === 0) return "";
+  const shown = list.slice(0, max).map((t) => `#${t}`);
+  const extra = list.length > max ? ` +${list.length - max}` : "";
+  return " " + shown.join(" ") + extra;
+}
+
 class EdgeItem extends vscode.TreeItem {
   constructor(
     public readonly edge: EdgeFact,
@@ -156,7 +169,7 @@ class EdgeItem extends vscode.TreeItem {
     );
     this.description = `${edge.rel}${
       conf !== undefined ? ` ${conf.toFixed(2)}` : ""
-    }${marks}`;
+    }${marks}${tagChips(tags(edge))}`;
     // Full payload, pretty-printed — the hover is the edge's detail view.
     const md = new vscode.MarkdownString(
       `**${edge.rel}** ${conf !== undefined ? `(${conf})` : ""}${marks}\n\n` +
@@ -331,9 +344,25 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
         (span, i) => new AnchorItem(span, roles[Math.min(i, roles.length - 1)])
       );
       // Payload nested in the tree, not hidden in a hover: every field a
-      // node, arbitrary shapes expand recursively.
+      // node, arbitrary shapes expand recursively. `tags` gets chip
+      // treatment instead of array-of-indices ceremony.
       const payloadItems = Object.entries(element.edge.payload ?? {}).map(
-        ([k, v]) => new PayloadItem(k, v)
+        ([k, v]) => {
+          if (
+            k === "tags" &&
+            Array.isArray(v) &&
+            v.every((x) => typeof x === "string")
+          ) {
+            const item = new vscode.TreeItem(
+              (v as string[]).map((t) => `#${t}`).join("  ")
+            );
+            item.iconPath = new vscode.ThemeIcon("tag");
+            item.tooltip = `tags: ${(v as string[]).join(", ")}`;
+            item.contextValue = "damaskTags";
+            return item as PayloadItem;
+          }
+          return new PayloadItem(k, v);
+        }
       );
       return [...anchorItems, ...payloadItems];
     }
