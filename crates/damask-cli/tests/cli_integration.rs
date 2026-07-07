@@ -2017,7 +2017,7 @@ fn namespace_schemas_validate_rank_and_filter() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("1-2 of 1"));
+        .stdout(predicate::str::contains("1-1 of 1"));
 }
 
 #[test]
