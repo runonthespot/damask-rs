@@ -630,6 +630,24 @@ export function activate(context: vscode.ExtensionContext): void {
       provider.filterQuery = undefined;
       provider.repaint();
     }),
+    vscode.commands.registerCommand("damask.sweep", () => {
+      const root = workspaceRoot();
+      if (!root) return;
+      execFile(
+        damaskBinary(),
+        ["sweep", "--reanchor"],
+        { cwd: root },
+        (err, stdout) => {
+          vscode.window.setStatusBarMessage(
+            err
+              ? `Damask sweep failed: ${String(err).slice(0, 80)}`
+              : `Damask: ${stdout.trim().split("\n")[0]}`,
+            5000
+          );
+          provider.refresh();
+        }
+      );
+    }),
     vscode.commands.registerCommand(
       "damask.copyPrompt",
       async (item: vscode.TreeItem) => {

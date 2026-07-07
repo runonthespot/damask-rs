@@ -197,6 +197,38 @@ pub fn edge_signal_density(q: &IndexQuery, edge: &EdgeRow) -> f64 {
     payload_signal_density(snippet.as_deref(), &edge.payload)
 }
 
+/// Re-emit a span fact with the SAME id and a fresh anchor at its
+/// effective location (append-only re-anchoring — `confirm`'s core, shared
+/// with `sweep`). Returns None when the file/range can't anchor.
+pub fn reanchor_span(
+    project: &DamaskProject,
+    row: &damask_store::index::query::SpanRow,
+) -> Option<Span> {
+    let (start, end) = (row.line_start?, row.line_end?);
+    let file_path = project.root.join(&row.path);
+    if !file_path.exists() {
+        return None;
+    }
+    let (snippet, content_hash) = extract_span_content(&file_path, start, end).ok()?;
+    let span_id = match DamaskId::parse(&row.id).ok()? {
+        DamaskId::Span(s) => s,
+        _ => return None,
+    };
+    Some(Span {
+        id: span_id,
+        path: row.path.clone(),
+        lines: Some([start, end]),
+        snippet,
+        symbol: row.symbol.clone(),
+        content_hash,
+        commit: git_head_commit(&project.root),
+        ns: row.ns.clone(),
+        ts: chrono::Utc::now(),
+        agent: ambient_agent(),
+        session: ambient_session(),
+    })
+}
+
 /// Resolve the active namespace from an override flag, env var, or project config.
 pub fn resolve_ns(project: &DamaskProject, ns_override: Option<&str>) -> Result<String> {
     if let Some(ns) = ns_override {

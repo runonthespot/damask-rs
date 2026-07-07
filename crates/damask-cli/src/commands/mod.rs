@@ -27,6 +27,7 @@ pub mod review;
 pub mod search;
 pub mod span;
 pub mod status;
+pub mod sweep;
 pub mod tag;
 pub mod triage;
 pub mod verify;

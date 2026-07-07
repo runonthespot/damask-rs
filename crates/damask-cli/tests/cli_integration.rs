@@ -1840,6 +1840,68 @@ fn ruled_out_status_sinks_marks_and_triages() {
 }
 
 #[test]
+fn sweep_reports_and_reanchors_drifted_spans() {
+    let dir = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    fs::write(dir.path().join("f.rs"), "fn keep() {}\nfn also() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    damask()
+        .args(["record", "f.rs", "1", "2", "risk", "-m", "holds", "-c", "0.8"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Drift the anchor: prepend a line and commit.
+    fs::write(dir.path().join("f.rs"), "// hdr\nfn keep() {}\nfn also() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "drift"]);
+
+    damask()
+        .arg("sweep")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Drifted (1 spans"))
+        .stdout(predicate::str::contains("damask sweep --reanchor"));
+
+    damask()
+        .args(["sweep", "--reanchor"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Re-anchored 1"));
+
+    damask()
+        .arg("sweep")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Sweep clean"));
+
+    // The healed anchor follows the drift: content moved to lines 2-3.
+    damask()
+        .args(["at", "f.rs"])
+        .current_dir(dir.path())
+        .assert()
+        .stdout(predicate::str::contains("f.rs:2-3"))
+        .stdout(predicate::str::contains("\u{2705}"));
+}
+
+#[test]
 fn log_is_bounded_by_default() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);

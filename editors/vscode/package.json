@@ -2,7 +2,7 @@
   "name": "damask-vscode",
   "displayName": "Damask",
   "description": "Navigate your repo's damask knowledge graph: findings as edges, anchors as nodes, click-through to the exact code.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "publisher": "damask",
   "license": "MIT",
   "repository": {
@@ -71,6 +71,11 @@
       {
         "command": "damask.copyPrompt",
         "title": "Copy Remediation Prompt for Claude"
+      },
+      {
+        "command": "damask.sweep",
+        "title": "Damask: Sweep (re-anchor drifted)",
+        "icon": "$(sync)"
       }
     ],
     "menus": {
@@ -94,6 +99,11 @@
           "command": "damask.hideClosed",
           "when": "view == damaskGraph && damaskShowClosed",
           "group": "navigation@3"
+        },
+        {
+          "command": "damask.sweep",
+          "when": "view == damaskGraph",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [

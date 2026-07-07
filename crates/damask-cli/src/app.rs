@@ -318,6 +318,13 @@ pub enum Command {
         close_ruled_out: bool,
     },
 
+    /// Anchor freshness for open knowledge: report drifted/gone spans; --reanchor heals drifted ones.
+    Sweep {
+        /// Re-anchor every drifted span at its effective location (append-only).
+        #[arg(long)]
+        reanchor: bool,
+    },
+
     /// Add tags to an existing edge (append-only, same-id re-emission; id prefixes ok).
     Tag {
         /// Edge id (e_..., unique prefix accepted).

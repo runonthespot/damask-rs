@@ -72,6 +72,7 @@ Use `close` when a finding is resolved, `dispute` only when it is wrong. Investi
 | `close <id> --reason resolved` | Mark done: disappears from at/where/briefing |
 | `confirm <id>` | Re-anchor a drifted span: still true of the code as it stands |
 | `triage` | Rot report + ready-to-run bulk closes (never closes on its own) |
+| `sweep [--reanchor]` | Anchor freshness report; --reanchor heals all drifted spans |
 | `tag <id> <tag>...` | Add tags to an existing edge (append-only) |
 | `follow <id> [rel]` | Traverse edge graph |
 | `why <id>` | Provenance: who created/endorsed/disputed |
