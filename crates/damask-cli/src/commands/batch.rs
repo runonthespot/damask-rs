@@ -82,6 +82,10 @@ pub fn run(
     }
 
     // Phase 2: Build all facts sequentially
+    let config = project
+        .read_config()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
     let mut facts: Vec<Fact> = Vec::with_capacity(items.len());
     let mut created_ids: Vec<DamaskId> = Vec::with_capacity(items.len());
 
@@ -104,6 +108,9 @@ pub fn run(
                 let from_id = resolve_ref(&inst.from, &created_ids, i)?;
                 let to_id = resolve_ref(&inst.to, &created_ids, i)?;
                 helpers::validate_payload(&inst.payload)
+                    .map_err(|e| anyhow::anyhow!("item {i}: {e}"))?;
+                config
+                    .validate_ns_payload(&ns, &inst.payload)
                     .map_err(|e| anyhow::anyhow!("item {i}: {e}"))?;
                 let edge = helpers::build_edge(from_id, to_id, &inst.rel, inst.payload.clone(), &ns);
                 let id = DamaskId::Edge(edge.id.clone());

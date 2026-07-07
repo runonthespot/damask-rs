@@ -1962,6 +1962,65 @@ fn severity_is_first_class_and_reasons_are_free_text() {
 }
 
 #[test]
+fn namespace_schemas_validate_rank_and_filter() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    fs::write(dir.path().join("contract.md"), "clause 1\nclause 2\nclause 3\n").unwrap();
+
+    // Assert a legal-domain schema on the ns.
+    let cfg_path = dir.path().join(".damask/config.json");
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
+    cfg["namespaces"] = serde_json::json!({
+        "legal": {"schema": {"jurisdiction": {
+            "enum": ["EU", "US", "UK"], "rank": {"EU": 1.3}}}}
+    });
+    fs::write(&cfg_path, cfg.to_string()).unwrap();
+
+    let rec = |line: &str, conf: &str, field: &str| {
+        damask()
+            .args(["--ns", "legal", "record", "contract.md", line, line, "risk",
+                   "-m", "finding", "-c", conf, "--field", field])
+            .current_dir(dir.path())
+            .assert()
+    };
+    rec("1", "0.8", "jurisdiction=US").success();
+    rec("2", "0.6", "jurisdiction=EU").success();
+
+    // record rejects enum violations with a teaching error.
+    rec("3", "0.5", "jurisdiction=DE")
+        .failure()
+        .stderr(predicate::str::contains("must be one of [EU, US, UK]"));
+
+    // batch rejects them too — no write door bypasses the schema.
+    let batch = r#"[{"span":{"path":"contract.md","start":3,"end":3}},{"edge":{"from":"$0","to":"_","rel":"risk","payload":{"summary":"x","confidence":0.5,"jurisdiction":"DE"}}}]"#;
+    damask()
+        .args(["--ns", "legal", "batch", "--stdin"])
+        .write_stdin(batch)
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must be one of [EU, US, UK]"));
+
+    // Custom field is filterable; declared rank weight beats confidence.
+    let out = damask()
+        .args(["--format", "json", "--ns", "legal", "where", "rel=risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(out.stdout).unwrap()).unwrap();
+    assert_eq!(json["edges"][0]["payload"]["jurisdiction"], "EU",
+        "declared rank weight must outrank higher confidence");
+    damask()
+        .args(["--ns", "legal", "where", "jurisdiction=EU"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1-2 of 1"));
+}
+
+#[test]
 fn log_is_bounded_by_default() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);
