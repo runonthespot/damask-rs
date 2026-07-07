@@ -2,7 +2,7 @@
   "name": "damask-vscode",
   "displayName": "Damask",
   "description": "Navigate your repo's damask knowledge graph: findings as edges, anchors as nodes, click-through to the exact code.",
-  "version": "0.11.0",
+  "version": "0.11.1",
   "publisher": "damask",
   "license": "MIT",
   "repository": {
@@ -131,6 +131,11 @@
           "type": "string",
           "default": "damask",
           "description": "Path to the damask CLI binary."
+        },
+        "damask.summaryLength": {
+          "type": "number",
+          "default": 72,
+          "description": "Max characters of an edge summary shown on its tree row (rows cannot wrap; full text is in the hover and the summary node)."
         }
       }
     }

@@ -213,6 +213,19 @@ function summary(e: EdgeFact): string {
   return typeof s === "string" ? s : JSON.stringify(e.payload).slice(0, 80);
 }
 
+/** Tree rows can't wrap (VS Code API); cap the label at a word boundary
+ * so the metadata description always survives on screen. Full text lives
+ * in the hover and the nested summary node. */
+function rowLabel(text: string): string {
+  const max = vscode.workspace
+    .getConfiguration("damask")
+    .get<number>("summaryLength", 72);
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const atWord = cut.lastIndexOf(" ");
+  return (atWord > max * 0.6 ? cut.slice(0, atWord) : cut) + "…";
+}
+
 function isRuledOut(e: EdgeFact): boolean {
   return e.payload?.["status"] === "ruled_out";
 }
@@ -245,7 +258,7 @@ class EdgeItem extends vscode.TreeItem {
       (isRuledOut(edge) ? " (ruled out)" : "");
     const dot = FRESHNESS_DOT[worstFreshness(anchors)];
     super(
-      `${summary(edge)}`,
+      rowLabel(summary(edge)),
       anchors.length > 0
         ? vscode.TreeItemCollapsibleState.Collapsed
         : vscode.TreeItemCollapsibleState.None
