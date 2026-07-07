@@ -62,6 +62,38 @@ function relRank(rel: string): number {
   return i === -1 ? REL_ORDER.length : i;
 }
 
+/** One icon+colour mapping for a rel, used by groups and edges alike.
+ * Colour is semantic and sparing: danger red, pitfall orange, judgment
+ * purple, structure blue — description-like rels stay unpainted. */
+function relIcon(rel: string, closed = false): vscode.ThemeIcon {
+  if (closed) {
+    return new vscode.ThemeIcon("archive", new vscode.ThemeColor("disabledForeground"));
+  }
+  const paint = (icon: string, color?: string) =>
+    color
+      ? new vscode.ThemeIcon(icon, new vscode.ThemeColor(color))
+      : new vscode.ThemeIcon(icon);
+  switch (rel) {
+    case "risk":
+      return paint("warning", "charts.red");
+    case "gotcha":
+      return paint("flame", "charts.orange");
+    case "contradicts":
+      return paint("git-compare", "charts.red");
+    case "decision":
+    case "invariant":
+      return paint("law", "charts.purple");
+    case "depends_on":
+    case "co_change":
+    case "implements":
+      return paint("link", "charts.blue");
+    case "describes":
+      return paint("book");
+    default:
+      return paint("circle-outline", "charts.yellow");
+  }
+}
+
 interface Graph {
   spans: Map<string, SpanFact>;
   edges: EdgeFact[];
@@ -188,19 +220,7 @@ class EdgeItem extends vscode.TreeItem {
     );
     md.supportHtml = false;
     this.tooltip = md;
-    this.iconPath = new vscode.ThemeIcon(
-      edge.is_closed
-        ? "archive"
-        : edge.rel === "risk"
-        ? "warning"
-        : edge.rel === "gotcha"
-        ? "flame"
-        : edge.rel === "decision" || edge.rel === "invariant"
-        ? "law"
-        : edge.rel === "describes"
-        ? "book"
-        : "link"
-    );
+    this.iconPath = relIcon(edge.rel, edge.is_closed);
     // Clicking the edge itself jumps to its primary anchor.
     if (anchors.length > 0) {
       this.command = {
@@ -226,19 +246,7 @@ class NamespaceItem extends vscode.TreeItem {
 class RelGroupItem extends vscode.TreeItem {
   constructor(public readonly rel: string, public readonly edges: EdgeFact[]) {
     super(`${rel} (${edges.length})`, vscode.TreeItemCollapsibleState.Collapsed);
-    this.iconPath = new vscode.ThemeIcon(
-      rel === "risk"
-        ? "warning"
-        : rel === "gotcha"
-        ? "flame"
-        : rel === "decision" || rel === "invariant"
-        ? "law"
-        : rel === "describes"
-        ? "book"
-        : rel === "contradicts"
-        ? "git-compare"
-        : "link"
-    );
+    this.iconPath = relIcon(rel);
     this.contextValue = "damaskRelGroup";
   }
 }
@@ -288,7 +296,10 @@ class AnchorItem extends vscode.TreeItem {
         : "";
     super(`${span.path}${lines}`, vscode.TreeItemCollapsibleState.None);
     this.description = role;
-    this.iconPath = new vscode.ThemeIcon("location");
+    this.iconPath = new vscode.ThemeIcon(
+      "location",
+      new vscode.ThemeColor("charts.green")
+    );
     this.tooltip = `${span.id}\n${span.path}${lines}`;
     this.command = {
       command: "damask.openAnchor",
