@@ -292,6 +292,27 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
   private graph: Graph | undefined;
   private error: string | undefined;
   showClosed = false;
+  filterQuery: string | undefined;
+
+  /** Case-insensitive substring match across everything an edge is. */
+  private matches(e: EdgeFact): boolean {
+    if (!this.filterQuery) return true;
+    const q = this.filterQuery.toLowerCase();
+    const anchorPaths = [e.from, e.to]
+      .filter((id): id is string => !!id)
+      .map((id) => this.graph?.spans.get(id)?.path ?? "")
+      .join(" ");
+    return (
+      `${summary(e)} ${e.rel} ${e.ns} ${e.id} ${tags(e).join(" ")} ` +
+      `${JSON.stringify(e.payload)} ${anchorPaths}`
+    )
+      .toLowerCase()
+      .includes(q);
+  }
+
+  repaint(): void {
+    this._onDidChange.fire();
+  }
 
   refresh(): void {
     const root = workspaceRoot();
@@ -388,15 +409,18 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     // Top level: one group per edge type — judgment rels first, ties
     // broken by size, mirroring orient's sectioning.
     const byRel = new Map<string, EdgeFact[]>();
+    let matchCount = 0;
     for (const e of this.graph.edges) {
       if (!this.showClosed && e.is_closed) continue;
+      if (!this.matches(e)) continue;
+      matchCount++;
       const bucket = byRel.get(e.rel);
       if (bucket) bucket.push(e);
       else byRel.set(e.rel, [e]);
     }
     // Arbitrary/custom rel types are first-class: unknown rels rank after
     // the known judgment ordering, then by size, then alphabetically.
-    return [...byRel.entries()]
+    const groups: vscode.TreeItem[] = [...byRel.entries()]
       .sort(
         ([relA, edgesA], [relB, edgesB]) =>
           relRank(relA) - relRank(relB) ||
@@ -404,6 +428,21 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
           relA.localeCompare(relB)
       )
       .map(([rel, edges]) => new RelGroupItem(rel, edges));
+
+    // Active search pinned at the top — click to clear.
+    if (this.filterQuery) {
+      const filterItem = new vscode.TreeItem(`search: "${this.filterQuery}"`);
+      filterItem.description = `${matchCount} match${
+        matchCount === 1 ? "" : "es"
+      } — click to clear`;
+      filterItem.iconPath = new vscode.ThemeIcon("search");
+      filterItem.command = {
+        command: "damask.clearSearch",
+        title: "Clear Search",
+      };
+      return [filterItem, ...groups];
+    }
+    return groups;
   }
 }
 
@@ -422,6 +461,21 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("damask.showClosed", () => {
       provider.showClosed = !provider.showClosed;
       provider.refresh();
+    }),
+    vscode.commands.registerCommand("damask.search", async () => {
+      const q = await vscode.window.showInputBox({
+        prompt: "Search the knowledge graph (summaries, payloads, tags, paths)",
+        value: provider.filterQuery ?? "",
+        placeHolder: "e.g. race, #security, auth.py",
+      });
+      if (q !== undefined) {
+        provider.filterQuery = q.trim() || undefined;
+        provider.repaint();
+      }
+    }),
+    vscode.commands.registerCommand("damask.clearSearch", () => {
+      provider.filterQuery = undefined;
+      provider.repaint();
     }),
     vscode.commands.registerCommand(
       "damask.openAnchor",

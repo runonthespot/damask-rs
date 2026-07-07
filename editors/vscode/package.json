@@ -2,7 +2,7 @@
   "name": "damask-vscode",
   "displayName": "Damask",
   "description": "Navigate your repo's damask knowledge graph: findings as edges, anchors as nodes, click-through to the exact code.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "damask",
   "license": "MIT",
   "repository": {
@@ -41,6 +41,11 @@
     },
     "commands": [
       {
+        "command": "damask.search",
+        "title": "Damask: Search Graph",
+        "icon": "$(search)"
+      },
+      {
         "command": "damask.refresh",
         "title": "Damask: Refresh Graph",
         "icon": "$(refresh)"
@@ -53,10 +58,19 @@
         "command": "damask.showClosed",
         "title": "Damask: Toggle Closed Edges",
         "icon": "$(archive)"
+      },
+      {
+        "command": "damask.clearSearch",
+        "title": "Damask: Clear Search"
       }
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "damask.search",
+          "when": "view == damaskGraph",
+          "group": "navigation@1"
+        },
         {
           "command": "damask.refresh",
           "when": "view == damaskGraph",
