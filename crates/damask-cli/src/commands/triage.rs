@@ -27,7 +27,12 @@ struct RotEdge {
     path: String,
 }
 
-pub fn run(close_deleted: Option<&str>, close_refuted: bool, format: Format) -> Result<()> {
+pub fn run(
+    close_deleted: Option<&str>,
+    close_refuted: bool,
+    close_ruled_out: bool,
+    format: Format,
+) -> Result<()> {
     let cwd = env::current_dir().context("failed to get current directory")?;
     let project = DamaskProject::discover(&cwd)
         .map_err(|e| anyhow::anyhow!("{}", e))
@@ -59,6 +64,8 @@ pub fn run(close_deleted: Option<&str>, close_refuted: bool, format: Format) -> 
     let mut deleted: Vec<RotEdge> = Vec::new();
     // Rot cause 2: refuted — repeatedly disputed, never endorsed.
     let mut refuted: Vec<RotEdge> = Vec::new();
+    // Rot cause 3: status says ruled_out (schema) but the edge is still open.
+    let mut ruled_out: Vec<RotEdge> = Vec::new();
 
     for edge in &open_edges {
         let anchor = edge_target_span_id(edge).and_then(|id| spans.get(id));
@@ -72,6 +79,15 @@ pub fn run(close_deleted: Option<&str>, close_refuted: bool, format: Format) -> 
                     path: span.path.clone(),
                 });
             }
+        }
+        let payload: serde_json::Value =
+            serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+        if payload.get("status").and_then(|v| v.as_str()) == Some("ruled_out") {
+            ruled_out.push(RotEdge {
+                edge_id: edge.id.clone(),
+                ns: edge.ns.clone(),
+                path: anchor.map(|s| s.path.clone()).unwrap_or_default(),
+            });
         }
         let disputes = dispute_counts.get(&edge.id).copied().unwrap_or(0);
         let endorsements = endorse_counts.get(&edge.id).copied().unwrap_or(0);
@@ -112,6 +128,19 @@ pub fn run(close_deleted: Option<&str>, close_refuted: bool, format: Format) -> 
         return Ok(());
     }
 
+    if close_ruled_out {
+        let matched: Vec<&RotEdge> = ruled_out.iter().collect();
+        if matched.is_empty() {
+            println!("Nothing to close: no open edges with status ruled_out.");
+            return Ok(());
+        }
+        let n = write_closes(&project, &matched, |_| {
+            "Closed by triage — status ruled_out: investigated and dismissed".to_string()
+        })?;
+        println!("Closed {n} ruled-out edges.");
+        return Ok(());
+    }
+
     if close_refuted {
         let matched: Vec<&RotEdge> = refuted.iter().collect();
         if matched.is_empty() {
@@ -143,7 +172,7 @@ pub fn run(close_deleted: Option<&str>, close_refuted: bool, format: Format) -> 
 
     match format {
         Format::Human => {
-            if deleted.is_empty() && refuted.is_empty() {
+            if deleted.is_empty() && refuted.is_empty() && ruled_out.is_empty() {
                 println!("No rot found: every open edge anchors to existing code and none are refuted.");
                 return Ok(());
             }
@@ -160,6 +189,14 @@ pub fn run(close_deleted: Option<&str>, close_refuted: bool, format: Format) -> 
                 if dirs.len() > 10 {
                     println!("    ... and {} more directories", dirs.len() - 10);
                 }
+            }
+            if !ruled_out.is_empty() {
+                println!();
+                println!(
+                    "  Ruled out but still open ({} edges — they rank near zero but linger):",
+                    ruled_out.len()
+                );
+                println!("      -> damask triage --close-ruled-out");
             }
             if !refuted.is_empty() {
                 println!();
@@ -192,6 +229,7 @@ pub fn run(close_deleted: Option<&str>, close_refuted: bool, format: Format) -> 
                     "deleted_anchor_edges": deleted.len(),
                     "deleted_by_dir": deleted_json,
                     "refuted": refuted_json,
+                    "ruled_out_open": ruled_out.len(),
                     "commands": {
                         "close_deleted": "damask triage --close-deleted <dir/>",
                         "close_refuted": "damask triage --close-refuted",

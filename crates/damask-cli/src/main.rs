@@ -180,7 +180,8 @@ fn main() -> anyhow::Result<()> {
         Command::Triage {
             close_deleted,
             close_refuted,
-        } => commands::triage::run(close_deleted.as_deref(), close_refuted, cli.format),
+            close_ruled_out,
+        } => commands::triage::run(close_deleted.as_deref(), close_refuted, close_ruled_out, cli.format),
         Command::Review { markdown } => commands::review::run(cli.format, markdown),
         Command::Search { query, ns, rel, where_preds, sem, limit, offset, show_closed } => {
             commands::search::run(&query, ns.as_deref(), rel.as_deref(), &where_preds, sem, limit, offset, show_closed, cli.format)

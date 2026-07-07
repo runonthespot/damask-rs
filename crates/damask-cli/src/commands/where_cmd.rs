@@ -221,6 +221,12 @@ fn print_human(
             .map(|c| format!(" ({:.2})", c))
             .unwrap_or_default();
 
+        let status_str = match env.status() {
+            Some("ruled_out") => " [ruled out]",
+            Some("hypothesis") => " [hypothesis]",
+            _ => "",
+        };
+
         // Endorsement/dispute counts
         let endorsement_str = if re.endorsement_count > 0 {
             format!(" \u{00D7}{}\u{2713}", re.endorsement_count)
@@ -244,8 +250,8 @@ fn print_human(
         let date = edge.ts.split('T').next().unwrap_or(&edge.ts);
 
         println!(
-            "  {} [{}]{}{}{}{} — {}",
-            edge.id, edge.rel, conf, endorsement_str, dispute_str, anchor, summary,
+            "  {} [{}]{}{}{}{}{} — {}",
+            edge.id, edge.rel, conf, status_str, endorsement_str, dispute_str, anchor, summary,
         );
         if anchor.is_empty() {
             let from_str = edge.from_id.as_deref().unwrap_or("_");

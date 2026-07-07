@@ -168,6 +168,10 @@ function summary(e: EdgeFact): string {
   return typeof s === "string" ? s : JSON.stringify(e.payload).slice(0, 80);
 }
 
+function isRuledOut(e: EdgeFact): boolean {
+  return e.payload?.["status"] === "ruled_out";
+}
+
 function tags(e: EdgeFact): string[] {
   const t = e.payload?.["tags"];
   return Array.isArray(t) ? t.filter((x): x is string => typeof x === "string") : [];
@@ -192,7 +196,8 @@ class EdgeItem extends vscode.TreeItem {
     const marks =
       (endorsed > 0 ? ` ×${endorsed}✓` : "") +
       (disputed > 0 ? ` ×${disputed}✗` : "") +
-      (edge.is_closed ? " (closed)" : "");
+      (edge.is_closed ? " (closed)" : "") +
+      (isRuledOut(edge) ? " (ruled out)" : "");
     super(
       `${summary(edge)}`,
       anchors.length > 0
@@ -461,7 +466,7 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     const byNs = new Map<string, EdgeFact[]>();
     let matchCount = 0;
     for (const e of this.graph.edges) {
-      if (!this.showClosed && e.is_closed) continue;
+      if (!this.showClosed && (e.is_closed || isRuledOut(e))) continue;
       if (!this.matches(e)) continue;
       matchCount++;
       const bucket = byNs.get(e.ns);

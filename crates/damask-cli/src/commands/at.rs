@@ -426,6 +426,13 @@ fn print_human(
             .map(|c| format!(" ({:.2})", c))
             .unwrap_or_default();
 
+        // Terminal/humble statuses are schema — the read side says so.
+        let status_str = match env.status() {
+            Some("ruled_out") => " [ruled out]",
+            Some("hypothesis") => " [hypothesis]",
+            _ => "",
+        };
+
         // Endorsement/dispute counts
         let endorsement_str = if re.endorsement_count > 0 {
             format!(" \u{00D7}{}\u{2713}", re.endorsement_count)
@@ -457,10 +464,11 @@ fn print_human(
         let date = re.edge.ts.split('T').next().unwrap_or(&re.edge.ts);
 
         println!(
-            "  {}{}{}{}{}{}{} — {}",
+            "  {}{}{}{}{}{}{}{} — {}",
             rel_glyph,
             re.edge.rel,
             conf,
+            status_str,
             endorsement_str,
             dispute_str,
             dispute_marker,

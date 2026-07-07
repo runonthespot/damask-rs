@@ -55,7 +55,7 @@ damask dispute <edge_id> --reason incorrect  # this is WRONG (use close for fixe
 damask confirm <span_or_edge_id>     # drifted anchor still true — re-anchors it, clears the ⚠
 damask triage                        # find rot, get ready-to-run bulk closes (never auto)
 ```
-Use `close` when a finding is resolved, `dispute` only when it is wrong.
+Use `close` when a finding is resolved, `dispute` only when it is wrong. Investigated a risk and dismissed it? Record with `"status":"ruled_out"` (schema) — it sinks in every ranking and `damask triage --close-ruled-out` can retire it later.
 
 ## Command Reference
 

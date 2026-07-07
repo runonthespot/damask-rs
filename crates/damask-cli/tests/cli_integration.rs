@@ -1781,6 +1781,65 @@ fn queries_never_dead_end() {
 }
 
 #[test]
+fn ruled_out_status_sinks_marks_and_triages() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::write(dir.path().join("f.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+
+    damask()
+        .args(["record", "f.rs", "1", "1", "risk", "-m", "live risk", "-c", "0.6"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    damask()
+        .args(["record", "f.rs", "2", "2", "risk",
+               r#"{"summary":"dismissed risk","confidence":0.95,"status":"ruled_out"}"#])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Ranking: despite higher confidence, ruled_out sinks below the live risk.
+    let out = damask()
+        .args(["--format", "json", "where", "rel=risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(out.stdout).unwrap()).unwrap();
+    let edges = json["edges"].as_array().unwrap();
+    assert_eq!(edges[0]["payload"]["summary"], "live risk");
+    assert_eq!(edges[1]["payload"]["status"], "ruled_out");
+
+    // Human output carries the marker.
+    damask()
+        .args(["where", "rel=risk"])
+        .current_dir(dir.path())
+        .assert()
+        .stdout(predicate::str::contains("[ruled out]"));
+
+    // Triage offers the door out, and takes it on request.
+    damask()
+        .arg("triage")
+        .current_dir(dir.path())
+        .assert()
+        .stdout(predicate::str::contains("--close-ruled-out"));
+    damask()
+        .args(["triage", "--close-ruled-out"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Closed 1 ruled-out edges"));
+    let out = damask()
+        .args(["where", "rel=risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(!stdout.contains("dismissed risk"), "closed ruled-out must vanish");
+}
+
+#[test]
 fn log_is_bounded_by_default() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);

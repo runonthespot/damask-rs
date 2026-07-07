@@ -312,6 +312,10 @@ pub enum Command {
         /// Close open edges with >=3 disputes and zero endorsements.
         #[arg(long)]
         close_refuted: bool,
+
+        /// Close open edges whose payload status is ruled_out.
+        #[arg(long)]
+        close_ruled_out: bool,
     },
 
     /// Add tags to an existing edge (append-only, same-id re-emission; id prefixes ok).

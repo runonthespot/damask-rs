@@ -82,15 +82,26 @@ pub fn rank_edge(input: &RankingInput) -> f64 {
     // Signal 8: Source (local vs community — all local for now)
     let source_score = 1.0;
 
+    // Signal 9: Status — schema statuses carry lifecycle meaning the read
+    // side must honor: a ruled_out risk was investigated and dismissed and
+    // must never outrank live findings; a hypothesis is humbler than an
+    // assertion. Multiplicative, so it dominates the composite.
+    let status_factor = match env.status() {
+        Some("ruled_out") => 0.15,
+        Some("hypothesis") => 0.85,
+        _ => 1.0,
+    };
+
     // Composite score: weighted sum of domain-neutral signals
-    resolution_score * 0.15
+    (resolution_score * 0.15
         + confidence_score * 0.20
         + signal_density_score * 0.05
         + completeness_score * 0.15
         + endorsement_score * 0.20
         + dispute_score * 0.05
         + decay_score * 0.15
-        + source_score * 0.05
+        + source_score * 0.05)
+        * status_factor
 }
 
 /// Rank a list of edges and return them sorted by score (highest first).
