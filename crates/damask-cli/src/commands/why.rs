@@ -16,6 +16,9 @@ pub fn run(edge_id: &str, format: Format) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{}", e))
         .context("no .damask/ found — run `damask init` first")?;
 
+    // Accept unique id prefixes.
+    let edge_id = &super::helpers::resolve_id(&project, edge_id)?;
+
     let db_path = project.damask_dir.join("index.db");
     let edges_dir = project.damask_dir.join("edges");
     let conn = update_index(&db_path, &edges_dir).map_err(|e| anyhow::anyhow!("{}", e))?;

@@ -34,10 +34,13 @@ damask record src/auth.rs 42 67 risk -m "No rate limiting on login" -c 0.9 \
 
 **4. Signal** — maintain graph quality:
 ```bash
-damask endorse <edge_id>             # confirm
-damask dispute <edge_id> '{"summary":"Fixed in PR #42"}'  # contradict
-damask close <edge_id> --reason resolved  # mark resolved
+damask endorse <edge_id>             # this is correct (id prefixes work: e_01KH3K)
+damask close <edge_id> --reason resolved  # this is DONE — closes disappear from at/where/briefing
+damask dispute <edge_id> --reason incorrect  # this is WRONG (use close for fixed things)
+damask confirm <span_or_edge_id>     # drifted anchor still true — re-anchors it, clears the ⚠
+damask triage                        # find rot, get ready-to-run bulk closes (never auto)
 ```
+Use `close` when a finding is resolved, `dispute` only when it is wrong.
 
 ## Command Reference
 

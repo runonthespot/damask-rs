@@ -92,6 +92,7 @@ pub fn run(
         let edge_id =
             edge_id.ok_or_else(|| anyhow::anyhow!("edge_id is required (or use --batch)"))?;
 
+        let edge_id = &super::helpers::resolve_id(&project, edge_id)?;
         if !edge_id.starts_with("e_") {
             anyhow::bail!("can only close edges (expected e_ prefix): {edge_id}");
         }

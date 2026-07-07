@@ -42,29 +42,37 @@ damask record src/auth.rs 42 67 risk -m "No rate limiting on login" -c 0.9 \
 
 **4. Signal** — maintain graph quality:
 ```bash
-damask endorse <edge_id>             # confirm
-damask dispute <edge_id> '{"summary":"Fixed in PR #42"}'  # contradict
-damask close <edge_id> --reason resolved  # mark resolved
+damask endorse <edge_id>             # this is correct (id prefixes work: e_01KH3K)
+damask close <edge_id> --reason resolved  # this is DONE — closes disappear from at/where/briefing
+damask dispute <edge_id> --reason incorrect  # this is WRONG (use close for fixed things)
+damask confirm <span_or_edge_id>     # drifted anchor still true — re-anchors it, clears the ⚠
+damask triage                        # find rot, get ready-to-run bulk closes (never auto)
 ```
+Use `close` when a finding is resolved, `dispute` only when it is wrong.
 
 ## Command Reference
 
 | Command | Purpose |
 |---------|---------|
 | `orient` | One-shot orientation: status + top findings + recent activity |
-| `at <loc>` | Edges touching a file or line |
-| `where <pred>...` | Filter edges by properties (AND-composed) |
+| `at <loc>` | Edges touching a file, line, or directory (dir → per-file rollup) |
+| `where <pred>...` | Filter edges, ranked + located (separate args AND-compose) |
 | `search <query>` | Full-text search over payloads |
-| `record <file> <start> <end> <rel> <payload>` | Create span + edge atomically |
-| `batch --stdin` | Create multiple facts with `$N` back-references |
+| `record <file> <start> <end> <rel> -m "..." -c 0.9` | Create span + edge atomically |
+| `bootstrap` | Seed an empty graph (manifests, TODOs, co-change history) |
 | `endorse <id>` | Signal confirmation |
-| `dispute <id> <payload>` | Signal contradiction |
-| `close <id>` | Mark resolved |
+| `dispute <id> --reason <r>` | Signal contradiction (wrong ≠ resolved — resolved means `close`) |
+| `close <id> --reason resolved` | Mark done: disappears from at/where/briefing |
+| `confirm <id>` | Re-anchor a drifted span: still true of the code as it stands |
+| `triage` | Rot report + ready-to-run bulk closes (never closes on its own) |
 | `follow <id> [rel]` | Traverse edge graph |
 | `why <id>` | Provenance: who created/endorsed/disputed |
 | `ns set <name>` | Switch namespace |
+| `log --since <date>` | Recent facts (bounded to 50 by default) |
 | `lint` | Flag quality issues |
 | `help <topic>` | Detailed reference (record, batch, where, rels, patterns, quality, cold-start) |
+
+IDs accept unique prefixes everywhere (`damask endorse e_01KH3K`). Every 0-result teaches the next query — trust the hints it prints.
 
 ## Relationship Types
 

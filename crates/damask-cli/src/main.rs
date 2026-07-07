@@ -174,7 +174,12 @@ fn main() -> anyhow::Result<()> {
         Command::Why { edge_id } => commands::why::run(&edge_id, cli.format),
         Command::Blame { id } => commands::blame::run(&id, cli.format),
         Command::Resolve { span_id } => commands::resolve::run(&span_id),
-        Command::Log => commands::log::run(cli.format),
+        Command::Log { limit, since } => commands::log::run(cli.format, limit, since.as_deref()),
+        Command::Confirm { id } => commands::confirm::run(&id, cli.format),
+        Command::Triage {
+            close_deleted,
+            close_refuted,
+        } => commands::triage::run(close_deleted.as_deref(), close_refuted, cli.format),
         Command::Review { markdown } => commands::review::run(cli.format, markdown),
         Command::Search { query, ns, rel, where_preds, sem, limit, offset, show_closed } => {
             commands::search::run(&query, ns.as_deref(), rel.as_deref(), &where_preds, sem, limit, offset, show_closed, cli.format)

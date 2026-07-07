@@ -10,11 +10,12 @@ license = "MIT"
 repository = "https://github.com/runonthespot/damask"
 
 [workspace.dependencies]
-# Internal
-damask-core = { path = "crates/damask-core" }
-damask-store = { path = "crates/damask-store" }
-damask-resolve = { path = "crates/damask-resolve" }
-damask-tui = { path = "crates/damask-tui" }
+# Internal — version alongside path so the workspace is publishable to
+# crates.io (publish order: core → resolve → store → tui → cli).
+damask-core = { path = "crates/damask-core", version = "0.1.0" }
+damask-store = { path = "crates/damask-store", version = "0.1.0" }
+damask-resolve = { path = "crates/damask-resolve", version = "0.1.0" }
+damask-tui = { path = "crates/damask-tui", version = "0.1.0" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

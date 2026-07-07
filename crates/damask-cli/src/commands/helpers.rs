@@ -261,6 +261,52 @@ pub fn git_head_commit(root: &Path) -> Option<String> {
         })
 }
 
+/// Resolve a possibly-abbreviated span/edge id: a full valid id passes
+/// through untouched (no index open); otherwise a case-insensitive
+/// unique-prefix match against the index. 28-char ULIDs that must
+/// round-trip byte-perfect are a syntax cliff — `e_01KH3K` should just
+/// work, and an ambiguous or unknown prefix should say so.
+pub fn resolve_id(project: &DamaskProject, input: &str) -> Result<String> {
+    if DamaskId::parse(input).is_ok() {
+        return Ok(input.to_string());
+    }
+    if !(input.starts_with("s_") || input.starts_with("e_")) {
+        bail!("'{input}' is not a valid span or edge ID (expected s_/e_ prefix)");
+    }
+    let db_path = project.damask_dir.join("index.db");
+    let edges_dir = project.damask_dir.join("edges");
+    let conn = damask_store::update_index_with_mode(
+        &db_path,
+        &edges_dir,
+        damask_store::IndexMode::ViewsPreferred,
+    )
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let q = IndexQuery::new(&conn);
+    let matches = q
+        .ids_with_prefix(input)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    match matches.len() {
+        0 => bail!("no span or edge id starts with '{input}'"),
+        1 => Ok(matches[0].clone()),
+        n => bail!(
+            "id prefix '{input}' is ambiguous ({n}+ matches): {}",
+            matches.join(", ")
+        ),
+    }
+}
+
+/// FTS5-safe query: every whitespace token is double-quoted so payload
+/// text like `read-modify-write` or `f(x)` matches literally instead of
+/// being parsed as FTS syntax ("no such column: modify"). Tokens compose
+/// with FTS5's implicit AND, same as unquoted plain words.
+pub fn sanitize_fts_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .map(|t| format!("\"{}\"", t.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Parse an endpoint string: "_" → None, otherwise parse as DamaskId.
 pub fn parse_endpoint(s: &str) -> Result<Option<DamaskId>> {
     if s == "_" {

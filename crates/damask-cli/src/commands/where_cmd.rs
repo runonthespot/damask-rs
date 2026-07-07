@@ -20,6 +20,24 @@ pub enum WhereSort {
 }
 
 pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, offset: usize, show_closed: bool, sort: WhereSort, format: Format, ns: Option<&str>) -> Result<()> {
+    // A boolean operator INSIDE one predicate arg silently matched nothing
+    // (exit 0, zero rows) — the classic "the graph taught me it's empty"
+    // failure. Catch it and show the multi-arg form.
+    for s in predicate_strs {
+        if s.contains(" AND ") || s.contains(" OR ") || s.contains("&&") {
+            anyhow::bail!(
+                "predicates AND-compose as SEPARATE arguments — operators inside one \
+                 argument are not parsed.\n  Instead of: damask where \"{s}\"\n  \
+                 Use:        damask where {}",
+                s.split(" AND ")
+                    .flat_map(|p| p.split(" OR "))
+                    .flat_map(|p| p.split("&&"))
+                    .map(|p| format!("\"{}\"", p.trim()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+    }
     let preds: Vec<Predicate> = predicate_strs
         .iter()
         .map(|s| Predicate::parse(s).map_err(|e| anyhow::anyhow!("{e}")))

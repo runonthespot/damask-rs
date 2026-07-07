@@ -44,8 +44,87 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
     };
 
     if spans.is_empty() {
+        // Never dead-end: a 0-result must mean "nothing there", not "you
+        // asked at the wrong granularity".
+        // 1) file:line with no spans at that line, but spans elsewhere in
+        //    the file → show the file's annotated regions.
+        if line.is_some() {
+            let file_spans = q.spans_for_file(&file).map_err(|e| anyhow::anyhow!("{}", e))?;
+            if !file_spans.is_empty() {
+                match format {
+                    Format::Human => {
+                        println!(
+                            "No spans at {location} — {} annotated region(s) elsewhere in this file:",
+                            file_spans.len()
+                        );
+                        for s in file_spans.iter().take(8) {
+                            let lines = match (s.line_start, s.line_end) {
+                                (Some(a), Some(b)) => format!(":{}-{}", a, b),
+                                _ => String::new(),
+                            };
+                            let glyph = freshness_glyph(s.resolution.as_deref(), s.recency.as_deref());
+                            println!("  {}{} ({}) {}", s.path, lines, s.id, glyph);
+                        }
+                        println!("  Next: damask at {file}");
+                    }
+                    Format::Json => {
+                        let regions: Vec<serde_json::Value> = file_spans
+                            .iter()
+                            .map(|s| serde_json::json!({"id": s.id, "line_start": s.line_start, "line_end": s.line_end}))
+                            .collect();
+                        println!(
+                            "{}",
+                            serde_json::json!({"spans": [], "edges": [], "mode": "in_file_fallback", "file_regions": regions, "next": format!("damask at {file}")})
+                        );
+                    }
+                }
+                return Ok(());
+            }
+        }
+        // 2) path prefix (directory) rollup: per-file heat map.
+        let rollup = q
+            .open_edge_counts_by_path_prefix(&file)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        if !rollup.is_empty() {
+            let total: u32 = rollup.iter().map(|(_, n)| n).sum();
+            match format {
+                Format::Human => {
+                    println!(
+                        "No single span at {location} — {} open edges across {} files under it:",
+                        total,
+                        rollup.len()
+                    );
+                    for (path, n) in rollup.iter().take(10) {
+                        println!("  {path}  ({n} edges)");
+                    }
+                    if rollup.len() > 10 {
+                        println!("  ... and {} more files", rollup.len() - 10);
+                    }
+                    if let Some((top, _)) = rollup.first() {
+                        println!("  Next: damask at {top}");
+                    }
+                }
+                Format::Json => {
+                    let files: Vec<serde_json::Value> = rollup
+                        .iter()
+                        .map(|(path, n)| serde_json::json!({"path": path, "edges": n}))
+                        .collect();
+                    println!(
+                        "{}",
+                        serde_json::json!({"spans": [], "edges": [], "mode": "rollup", "files": files})
+                    );
+                }
+            }
+            return Ok(());
+        }
+        // 3) genuinely empty: teach the record template.
         match format {
-            Format::Human => println!("No spans at {location}"),
+            Format::Human => {
+                println!("No spans at {location}");
+                println!(
+                    "  Record the first: damask record {file} <start> <end> risk -m \"what you found\" -c 0.8"
+                );
+            }
             Format::Json => println!("{{\"spans\":[],\"edges\":[]}}"),
         }
         return Ok(());
@@ -303,7 +382,16 @@ fn print_human(
             format!(" {}", glyph)
         };
 
-        println!("\n{}{} ({}){}{}\n", span.path, lines, span.id, glyph_suffix, snippet);
+        println!("\n{}{} ({}){}{}", span.path, lines, span.id, glyph_suffix, snippet);
+        // A drifted anchor carries its own repair instructions: confirm if
+        // the annotation still holds, dispute the edge if it doesn't.
+        if !glyph.is_empty() && glyph != glyphs::EXACT_UNCHANGED {
+            println!(
+                "  drifted — still true? `damask confirm {}` · wrong now? `damask dispute <edge_id> --reason stale`",
+                span.id
+            );
+        }
+        println!();
     }
 
     if ranked.is_empty() {

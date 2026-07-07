@@ -289,12 +289,29 @@ pub enum Command {
         payload: Option<String>,
 
         /// Use a reason template instead of raw JSON payload.
-        #[arg(long, value_parser = ["resolved", "outdated", "incorrect", "duplicate"])]
+        #[arg(long, value_parser = ["resolved", "fixed", "stale", "outdated", "incorrect", "duplicate"])]
         reason: Option<String>,
 
         /// Batch mode: read edge IDs from stdin, one per line.
         #[arg(long)]
         batch: bool,
+    },
+
+    /// Re-anchor a drifted span (or an edge's anchor + endorse it): "still true of the code as it stands".
+    Confirm {
+        /// Span (s_) or edge (e_) id to confirm.
+        id: String,
+    },
+
+    /// Find rot and propose bulk closes (never closes without a flag).
+    Triage {
+        /// Close open edges anchored to deleted files under this path prefix.
+        #[arg(long, value_name = "PATH_PREFIX")]
+        close_deleted: Option<String>,
+
+        /// Close open edges with >=3 disputes and zero endorsements.
+        #[arg(long)]
+        close_refuted: bool,
     },
 
     /// Mark an edge as closed (resolved). Creates a rel=closed meta-edge.
@@ -421,7 +438,15 @@ pub enum Command {
     },
 
     /// Show fact log, optionally filtered.
-    Log,
+    Log {
+        /// Maximum facts to show, most recent last (0 = all).
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+
+        /// Only show facts created since this date (YYYY-MM-DD).
+        #[arg(long)]
+        since: Option<String>,
+    },
 
     /// Show new edges since last commit, ranked and grouped.
     Review {

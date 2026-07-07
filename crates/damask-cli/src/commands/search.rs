@@ -217,10 +217,16 @@ fn fts_search(
     rel: Option<&str>,
     show_closed: bool,
 ) -> Result<Vec<damask_store::index::query::EdgeRow>> {
+    // Sanitize by default: searching `read-modify-write` — a string
+    // verbatim in stored payloads — used to throw "no such column:
+    // modify" because raw text hit the FTS5 syntax parser. Quoted tokens
+    // behave identically to plain words for ordinary queries.
+    let sanitized = super::helpers::sanitize_fts_query(query);
     if show_closed {
-        q.search_fts(query, ns, rel).map_err(|e| anyhow::anyhow!("{}", e).into())
+        q.search_fts(&sanitized, ns, rel)
+            .map_err(|e| anyhow::anyhow!("{}", e).into())
     } else {
-        q.search_fts_open(query, ns, rel)
+        q.search_fts_open(&sanitized, ns, rel)
             .map_err(|e| anyhow::anyhow!("{}", e).into())
     }
 }

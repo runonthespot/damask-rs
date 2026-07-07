@@ -6,7 +6,10 @@ use std::env;
 use crate::error::Result;
 use crate::output::Format;
 
-pub fn run(format: Format) -> Result<()> {
+/// Show the fact log — bounded by default. An unbounded log's JSON output
+/// once weighed more than the entire store (805KB, ~200k tokens) and
+/// flooded any context window that asked "what's in the graph".
+pub fn run(format: Format, limit: usize, since: Option<&str>) -> Result<()> {
     let cwd = env::current_dir().context("failed to get current directory")?;
     let project = DamaskProject::discover(&cwd)
         .map_err(|e| anyhow::anyhow!("{}", e))
@@ -25,101 +28,113 @@ pub fn run(format: Format) -> Result<()> {
         .all_edges_chronological()
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
+    // Merge into one chronological stream.
+    let mut entries: Vec<LogEntry> = Vec::new();
+    for span in &spans {
+        let lines = match (span.line_start, span.line_end) {
+            (Some(s), Some(e)) => format!(":{}-{}", s, e),
+            _ => String::new(),
+        };
+        entries.push(LogEntry {
+            ts: span.ts.clone(),
+            display: format!(
+                "  {} span {} {}{}",
+                date_part(&span.ts),
+                span.id,
+                span.path,
+                lines
+            ),
+            json: serde_json::json!({
+                "type": "span",
+                "id": span.id,
+                "path": span.path,
+                "line_start": span.line_start,
+                "line_end": span.line_end,
+                "ns": span.ns,
+                "ts": span.ts,
+            }),
+        });
+    }
+    for edge in &edges {
+        let p: serde_json::Value =
+            serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+        let env = PayloadEnvelope::new(&p);
+        let summary = env.summary().unwrap_or("");
+        let agent = edge.agent.as_deref().unwrap_or("");
+        let active = if edge.is_active { "" } else { " (inactive)" };
+        entries.push(LogEntry {
+            ts: edge.ts.clone(),
+            display: format!(
+                "  {} edge {} [{}] {}{} {}",
+                date_part(&edge.ts),
+                edge.id,
+                edge.rel,
+                agent,
+                active,
+                summary
+            ),
+            json: serde_json::json!({
+                "type": "edge",
+                "id": edge.id,
+                "rel": edge.rel,
+                "payload": p,
+                "ns": edge.ns,
+                "ts": edge.ts,
+                "is_active": edge.is_active,
+            }),
+        });
+    }
+
+    entries.sort_by(|a, b| a.ts.cmp(&b.ts));
+
+    // --since filter (date prefix compare on RFC3339 timestamps).
+    if let Some(since_date) = since {
+        entries.retain(|e| date_part(&e.ts) >= since_date);
+    }
+
+    let total = entries.len();
+    // Bounded by default: keep the most recent `limit` (still printed in
+    // chronological order). 0 = unlimited.
+    let skipped = if limit > 0 && total > limit {
+        let s = total - limit;
+        entries.drain(..s);
+        s
+    } else {
+        0
+    };
+    let shown = entries.len();
+
     match format {
         Format::Human => {
-            if spans.is_empty() && edges.is_empty() {
+            if total == 0 {
                 println!("No facts recorded yet.");
                 return Ok(());
             }
-
             println!();
-            println!("Fact log ({} spans, {} edges):", spans.len(), edges.len());
+            println!(
+                "Fact log ({} spans, {} edges total):",
+                spans.len(),
+                edges.len()
+            );
+            if skipped > 0 {
+                println!(
+                    "  ... {skipped} earlier facts hidden — `damask log --limit 0` for all, `--since YYYY-MM-DD` to filter"
+                );
+            }
             println!();
-
-            let mut entries: Vec<LogEntry> = Vec::new();
-
-            for span in &spans {
-                let lines = match (span.line_start, span.line_end) {
-                    (Some(s), Some(e)) => format!(":{}-{}", s, e),
-                    _ => String::new(),
-                };
-                entries.push(LogEntry {
-                    ts: span.ts.clone(),
-                    display: format!(
-                        "  {} span {} {}{}",
-                        date_part(&span.ts),
-                        span.id,
-                        span.path,
-                        lines
-                    ),
-                });
-            }
-
-            for edge in &edges {
-                let p: serde_json::Value =
-                    serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
-                let env = PayloadEnvelope::new(&p);
-                let summary = env.summary().unwrap_or("");
-                let agent = edge.agent.as_deref().unwrap_or("");
-                let active = if edge.is_active { "" } else { " (inactive)" };
-                entries.push(LogEntry {
-                    ts: edge.ts.clone(),
-                    display: format!(
-                        "  {} edge {} [{}] {}{} {}",
-                        date_part(&edge.ts),
-                        edge.id,
-                        edge.rel,
-                        agent,
-                        active,
-                        summary
-                    ),
-                });
-            }
-
-            entries.sort_by(|a, b| a.ts.cmp(&b.ts));
-
             for entry in &entries {
                 println!("{}", entry.display);
             }
-
             println!();
         }
         Format::Json => {
-            let spans_json: Vec<serde_json::Value> = spans
-                .iter()
-                .map(|s| {
-                    serde_json::json!({
-                        "type": "span",
-                        "id": s.id,
-                        "path": s.path,
-                        "line_start": s.line_start,
-                        "line_end": s.line_end,
-                        "ns": s.ns,
-                        "ts": s.ts,
-                    })
-                })
-                .collect();
-
-            let edges_json: Vec<serde_json::Value> = edges
-                .iter()
-                .map(|e| {
-                    let payload: serde_json::Value =
-                        serde_json::from_str(&e.payload).unwrap_or(serde_json::json!({}));
-                    serde_json::json!({
-                        "type": "edge",
-                        "id": e.id,
-                        "rel": e.rel,
-                        "payload": payload,
-                        "ns": e.ns,
-                        "ts": e.ts,
-                        "is_active": e.is_active,
-                    })
-                })
-                .collect();
-
+            let facts: Vec<&serde_json::Value> = entries.iter().map(|e| &e.json).collect();
             let output = serde_json::json!({
-                "spans": spans_json,
-                "edges": edges_json,
+                "context": {
+                    "showing": { "limit": limit, "count": shown, "total": total },
+                    "since": since,
+                },
+                "facts": facts,
             });
             println!("{}", serde_json::to_string_pretty(&output).unwrap());
         }
@@ -131,6 +146,7 @@ pub fn run(format: Format) -> Result<()> {
 struct LogEntry {
     ts: String,
     display: String,
+    json: serde_json::Value,
 }
 
 fn date_part(ts: &str) -> &str {

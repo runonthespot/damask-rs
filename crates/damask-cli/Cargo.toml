@@ -1,10 +1,14 @@
 [package]
 name = "damask"
-description = "A knowledge fabric for agents — CLI tool"
+description = "A knowledge fabric for AI agents — structured, code-anchored memory that follows the code, self-prunes, and grows more trustworthy as sessions confirm it"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords = ["ai", "agents", "knowledge", "annotations", "memory"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "damask"

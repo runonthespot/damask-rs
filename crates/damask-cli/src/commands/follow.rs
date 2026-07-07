@@ -17,12 +17,28 @@ pub fn run(id: &str, rel: Option<&str>, depth: u32, format: Format) -> Result<()
         .map_err(|e| anyhow::anyhow!("{}", e))
         .context("no .damask/ found — run `damask init` first")?;
 
+    // Accept unique id prefixes; a full-but-unknown id must be an error,
+    // not a fake empty tree that teaches "nothing is connected here".
+    let id = &super::helpers::resolve_id(&project, id)?;
+
     let db_path = project.damask_dir.join("index.db");
     let edges_dir = project.damask_dir.join("edges");
     let conn = update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let q = IndexQuery::new(&conn);
+    let known = if id.starts_with("s_") {
+        q.span_by_id(id)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+            .is_some()
+    } else {
+        q.edge_by_id(id)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+            .is_some()
+    };
+    if !known {
+        anyhow::bail!("no span or edge with id {id}");
+    }
     let tree = q
         .follow(id, rel, depth)
         .map_err(|e| anyhow::anyhow!("{}", e))?;

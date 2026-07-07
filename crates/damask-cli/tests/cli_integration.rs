@@ -1703,6 +1703,291 @@ fn bootstrap_seeds_and_is_idempotent() {
 }
 
 #[test]
+fn queries_never_dead_end() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/a.rs"), "fn a() {}\nfn b() {}\nfn c() {}\n").unwrap();
+    fs::write(dir.path().join("src/b.rs"), "fn d() {}\n").unwrap();
+
+    damask()
+        .args(["record", "src/a.rs", "1", "1", "risk", "-m", "read-modify-write race", "-c", "0.8"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    damask()
+        .args(["record", "src/b.rs", "1", "1", "gotcha", "-m", "quirk", "-c", "0.6"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Directory rollup: `at src/` is a heat map, not a dead end.
+    damask()
+        .args(["at", "src/"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 open edges across 2 files"))
+        .stdout(predicate::str::contains("src/a.rs"))
+        .stdout(predicate::str::contains("Next: damask at"));
+
+    // In-file fallback: a line miss lists the file's annotated regions.
+    damask()
+        .args(["at", "src/a.rs:3"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("annotated region(s) elsewhere in this file"))
+        .stdout(predicate::str::contains("Next: damask at src/a.rs"));
+
+    // FTS syntax characters in payload text are searchable, not a crash.
+    damask()
+        .args(["search", "read-modify-write"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("read-modify-write race"));
+
+    // Inline AND errors with the corrected multi-arg form.
+    damask()
+        .args(["where", "rel=risk AND confidence>0.5"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("\"rel=risk\" \"confidence>0.5\""));
+
+    // Unique id prefix round-trips; unknown full id on follow exits 1.
+    let output = damask()
+        .args(["--format", "json", "where", "rel=risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let full_id = json["edges"][0]["id"].as_str().unwrap();
+    damask()
+        .args(["endorse", &full_id[..12], r#"{"summary":"confirmed"}"#])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(full_id));
+    damask()
+        .args(["follow", "e_01AAAAAAAAAAAAAAAAAAAAAAAA"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no span or edge"));
+}
+
+#[test]
+fn log_is_bounded_by_default() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::write(dir.path().join("f.rs"), "fn x() {}\n").unwrap();
+    for i in 0..30 {
+        damask()
+            .args(["record", "f.rs", "1", "1", "risk", "-m", &format!("finding {i}"), "-c", "0.5"])
+            .current_dir(dir.path())
+            .assert()
+            .success();
+    }
+    // 30 records = 60 facts; default limit 50 hides the earliest 10.
+    damask()
+        .arg("log")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("10 earlier facts hidden"));
+    let output = damask()
+        .args(["--format", "json", "log", "--limit", "5"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    assert_eq!(json["facts"].as_array().unwrap().len(), 5);
+    assert_eq!(json["context"]["showing"]["total"], 60);
+}
+
+#[test]
+fn dispute_resolution_reason_teaches_close() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::write(dir.path().join("f.rs"), "fn x() {}\n").unwrap();
+
+    let output = damask()
+        .args(["--format", "json", "record", "f.rs", "1", "1", "risk", "-m", "r", "-c", "0.8"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let facts: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
+    let edge_id = facts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["t"] == "edge")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // --reason fixed writes the dispute AND teaches the close.
+    damask()
+        .args(["dispute", &edge_id, "--reason", "fixed"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Disputed"))
+        .stdout(predicate::str::contains(format!("damask close {edge_id} --reason resolved")));
+
+    // A raw payload starting "Fixed:" gets the same hint.
+    damask()
+        .args(["dispute", &edge_id, r#"{"summary":"Fixed: in PR #42"}"#])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reads as RESOLVED"));
+}
+
+#[test]
+fn triage_reports_then_closes_deleted_anchors() {
+    let dir = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    fs::create_dir_all(dir.path().join("src/flow")).unwrap();
+    fs::write(dir.path().join("src/flow/gone.rs"), "fn g() {}\n").unwrap();
+    fs::write(dir.path().join("live.rs"), "fn l() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    damask()
+        .args(["record", "src/flow/gone.rs", "1", "1", "risk", "-m", "doomed", "-c", "0.8"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    damask()
+        .args(["record", "live.rs", "1", "1", "risk", "-m", "alive", "-c", "0.8"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    git(&["rm", "-rq", "src/flow"]);
+    git(&["commit", "-qm", "remove flow"]);
+
+    // Report proposes, never closes.
+    damask()
+        .arg("triage")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/flow/"))
+        .stdout(predicate::str::contains("--close-deleted src/flow/"));
+    damask()
+        .args(["where", "rel=risk"])
+        .current_dir(dir.path())
+        .assert()
+        .stdout(predicate::str::contains("doomed"), );
+
+    // Execute the proposed close: doomed disappears, alive stays.
+    damask()
+        .args(["triage", "--close-deleted", "src/flow/"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Closed 1 edges"));
+    let out = damask()
+        .args(["where", "rel=risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(!stdout.contains("doomed"), "closed edge must vanish from where");
+    assert!(stdout.contains("alive"), "live edge must remain");
+}
+
+#[test]
+fn confirm_reanchors_drifted_span() {
+    let dir = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@t"]);
+    git(&["config", "user.name", "t"]);
+    fs::write(dir.path().join("f.rs"), "fn keep() {}\nfn also() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    damask()
+        .args(["record", "f.rs", "1", "2", "risk", "-m", "still true", "-c", "0.8"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Drift: prepend a line and commit, content moves to 2-3.
+    fs::write(dir.path().join("f.rs"), "// header\nfn keep() {}\nfn also() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "drift"]);
+
+    // at shows the drifted glyph + repair hint with the span id.
+    let out = damask()
+        .args(["at", "f.rs"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("f.rs:2-3"), "anchor must track the drift: {stdout}");
+    assert!(stdout.contains("damask confirm s_"), "drift hint must name the span");
+    let span_id = stdout
+        .split("damask confirm ")
+        .nth(1)
+        .unwrap()
+        .split('`')
+        .next()
+        .unwrap()
+        .to_string();
+
+    damask()
+        .args(["confirm", &span_id])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Re-anchored"));
+
+    // Healed: ✅, no more drift hint.
+    let out = damask()
+        .args(["at", "f.rs"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains('\u{2705}'), "confirmed span must show exact: {stdout}");
+    assert!(!stdout.contains("drifted —"), "repair hint must clear after confirm");
+}
+
+#[test]
 fn empty_briefing_advertises_bootstrap() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);

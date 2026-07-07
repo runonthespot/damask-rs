@@ -244,6 +244,55 @@ impl<'a> IndexQuery<'a> {
         Ok(map)
     }
 
+    /// Open-edge counts per annotated file under a path prefix — the
+    /// directory rollup behind `at <dir>/`: a miss becomes a menu.
+    pub fn open_edge_counts_by_path_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, u32)>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT s.path, COUNT(DISTINCT e.id) AS n
+                 FROM spans s
+                 JOIN edges e ON (e.from_id = s.id OR e.to_id = s.id)
+                 WHERE s.path LIKE ?1 || '%' AND e.is_active = 1 AND e.is_closed = 0
+                 GROUP BY s.path ORDER BY n DESC, s.path",
+            )
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let rows = stmt
+            .query_map(rusqlite::params![prefix], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u32>(1)?))
+            })
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| StoreError::Io(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// Span and edge ids starting with the given prefix (case-insensitive
+    /// via SQLite ASCII LIKE), capped for did-you-mean display.
+    pub fn ids_with_prefix(&self, prefix: &str) -> Result<Vec<String>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id FROM spans WHERE id LIKE ?1 || '%'
+                 UNION SELECT id FROM edges WHERE id LIKE ?1 || '%'
+                 ORDER BY id LIMIT 6",
+            )
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let rows = stmt
+            .query_map(rusqlite::params![prefix], |row| row.get::<_, String>(0))
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| StoreError::Io(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
     /// Get the most recent endorsement timestamp for an edge.
     /// Meta-edges use from_id = target edge.
     pub fn latest_endorsement_ts(&self, edge_id: &str) -> Result<Option<String>, StoreError> {

@@ -799,13 +799,27 @@ fn insert_facts(
         )
         .map_err(|e| StoreError::Io(e.to_string()))?;
 
+    // A span id appearing more than once in this batch is an append-only
+    // re-anchoring (`damask confirm`): the later fact carries a fresh
+    // anchor that may share the old content_hash, so reuse must not
+    // resurrect the superseded resolution — resolve those fresh.
+    let mut span_id_counts: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
+    for (fact, _) in facts {
+        if let Fact::Span(s) = fact {
+            *span_id_counts.entry(s.id.as_str()).or_insert(0) += 1;
+        }
+    }
+
     for (fact, source_path) in facts {
         let source_file_str = source_path.display().to_string();
         match fact {
             Fact::Span(s) => {
                 let (resolution_str, recency_str, effective_line_start, effective_line_end, effective_path) =
                     match reuse.get(s.id.as_str()).filter(|r| {
-                        r.resolution.is_some() && r.content_hash == s.content_hash
+                        span_id_counts.get(s.id.as_str()) == Some(&1)
+                            && r.resolution.is_some()
+                            && r.content_hash == s.content_hash
                     }) {
                         Some(r) => (
                             r.resolution.clone(),
