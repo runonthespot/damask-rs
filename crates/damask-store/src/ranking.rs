@@ -28,6 +28,10 @@ pub struct RankingInput {
     /// Signal density score (1.0 = original insight, penalized toward 0.5 for restatements).
     /// Defaults to 1.0 when not computed.
     pub signal_density: f64,
+    /// Namespace-schema rank multiplier (e.g. severity weights) — domain
+    /// semantics computed from config data, not baked into this ranker.
+    /// Defaults to 1.0.
+    pub schema_factor: f64,
 }
 
 /// Compute the composite ranking score for an edge.
@@ -92,16 +96,6 @@ pub fn rank_edge(input: &RankingInput) -> f64 {
         _ => 1.0,
     };
 
-    // Signal 10: Severity — how much it matters, orthogonal to confidence.
-    // Modest: severity orders attention, it must not drown out freshness
-    // or trust.
-    let severity_factor = match payload.get("severity").and_then(|v| v.as_str()) {
-        Some("critical") => 1.12,
-        Some("high") => 1.06,
-        Some("low") => 0.92,
-        _ => 1.0,
-    };
-
     // Composite score: weighted sum of domain-neutral signals
     (resolution_score * 0.15
         + confidence_score * 0.20
@@ -112,7 +106,7 @@ pub fn rank_edge(input: &RankingInput) -> f64 {
         + decay_score * 0.15
         + source_score * 0.05)
         * status_factor
-        * severity_factor
+        * input.schema_factor
 }
 
 /// Rank a list of edges and return them sorted by score (highest first).
@@ -170,6 +164,7 @@ mod tests {
             now: Utc::now(),
             resolution_weight: 1.0,
             signal_density: 1.0,
+            schema_factor: 1.0,
         }
     }
 

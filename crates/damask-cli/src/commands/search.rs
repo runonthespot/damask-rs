@@ -102,6 +102,7 @@ pub fn run(
             now,
             resolution_weight,
             signal_density: 1.0,
+            schema_factor: 1.0,
         });
     }
 

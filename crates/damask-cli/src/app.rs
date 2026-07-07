@@ -127,9 +127,15 @@ pub enum Command {
         #[arg(long)]
         action: Option<String>,
 
-        /// Payload severity: how much it matters (orthogonal to confidence).
-        #[arg(long, value_parser = ["critical", "high", "medium", "low"])]
+        /// Payload severity — the DEFAULT-convention field; namespace
+        /// schemas may replace it. Validated against the active schema.
+        #[arg(long)]
         severity: Option<String>,
+
+        /// Arbitrary payload field, KEY=VALUE (repeatable). Numbers and
+        /// true/false are typed; everything else is a string.
+        #[arg(long = "field", value_name = "KEY=VALUE")]
+        fields: Vec<String>,
 
         /// Payload tag (repeatable).
         #[arg(long = "tag")]
@@ -173,9 +179,15 @@ pub enum Command {
         #[arg(long)]
         action: Option<String>,
 
-        /// Payload severity: how much it matters (orthogonal to confidence).
-        #[arg(long, value_parser = ["critical", "high", "medium", "low"])]
+        /// Payload severity — the DEFAULT-convention field; namespace
+        /// schemas may replace it. Validated against the active schema.
+        #[arg(long)]
         severity: Option<String>,
+
+        /// Arbitrary payload field, KEY=VALUE (repeatable). Numbers and
+        /// true/false are typed; everything else is a string.
+        #[arg(long = "field", value_name = "KEY=VALUE")]
+        fields: Vec<String>,
 
         /// Payload tag (repeatable).
         #[arg(long = "tag")]

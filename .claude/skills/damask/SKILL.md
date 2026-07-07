@@ -45,7 +45,7 @@ If ck is installed, join code search with knowledge in one pipe:
 damask record src/auth.rs 42 67 risk -m "No rate limiting on login" -c 0.9 \
   --action "Add rate limiter" --symbol handle_login
 ```
-`-m` is the summary, `-c` confidence (0.0-1.0), `--severity critical|high|medium|low` is how much it MATTERS — orthogonal to confidence (a 0.95-confidence dead-code finding is still low-severity). Filter with `damask where "severity=critical"`. Inline JSON payloads also work for richer fields — run `damask help record` for the full schema.
+`-m` is the summary, `-c` confidence (0.0-1.0), `--severity critical|high|medium|low` is how much it MATTERS — orthogonal to confidence — and is the DEFAULT convention, not core: namespaces can assert their own payload schemas in `.damask/config.json` (`"namespaces":{"<ns>":{"schema":{"<field>":{"enum":[...],"rank":{"<value>":1.2}}}}}`) — enum-validated at write time, rank weights shape ordering. Add any field with `--field key=value`; EVERY payload field is filterable: `damask where "jurisdiction=EU"`. Inline JSON payloads also work for richer fields — run `damask help record` for the full schema.
 
 **4. Signal** — maintain graph quality:
 ```bash

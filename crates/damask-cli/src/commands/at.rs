@@ -252,6 +252,11 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
                 })
                 .unwrap_or(1.0);
 
+            let schema_factor = {
+                let payload: serde_json::Value =
+                    serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+                config.schema_rank_factor(&edge.ns, &payload)
+            };
             all_inputs.push(RankingInput {
                 edge,
                 endorsement_count,
@@ -261,6 +266,7 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
                 now,
                 resolution_weight,
                 signal_density,
+                schema_factor,
             });
         }
     }

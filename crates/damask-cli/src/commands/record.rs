@@ -20,6 +20,7 @@ pub fn run(
     confidence: Option<f64>,
     action: Option<&str>,
     severity: Option<&str>,
+    fields: &[String],
     tags: &[String],
     symbol: Option<&str>,
     to: &str,
@@ -63,8 +64,15 @@ pub fn run(
         confidence,
         action,
         severity,
+        fields,
         tags,
     )?;
+
+    // Namespace schemas assert domain vocabulary — validate before writing.
+    let config = project.read_config().map_err(|e| anyhow::anyhow!("{}", e))?;
+    config
+        .validate_ns_payload(&ns, &payload_value)
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     // Parse --to endpoint
     let to_id = helpers::parse_endpoint(to).context("invalid '--to' ID")?;

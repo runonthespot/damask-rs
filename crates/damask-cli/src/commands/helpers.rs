@@ -126,6 +126,9 @@ pub fn ranking_input(
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .unwrap_or(now);
     let half_life = config.decay_half_life_days(&edge.ns);
+    let payload: serde_json::Value =
+        serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+    let schema_factor = config.schema_rank_factor(&edge.ns, &payload);
     damask_store::RankingInput {
         edge,
         endorsement_count,
@@ -135,6 +138,7 @@ pub fn ranking_input(
         now,
         resolution_weight,
         signal_density: 1.0,
+        schema_factor,
     }
 }
 
@@ -411,6 +415,7 @@ pub fn compose_payload(
     confidence: Option<f64>,
     action: Option<&str>,
     severity: Option<&str>,
+    fields: &[String],
     tags: &[String],
 ) -> Result<serde_json::Value> {
     let mut value = resolve_payload(inline, file, stdin).map_err(|e| {
@@ -428,6 +433,7 @@ pub fn compose_payload(
         || confidence.is_some()
         || action.is_some()
         || severity.is_some()
+        || !fields.is_empty()
         || !tags.is_empty();
     if has_flags {
         let Some(obj) = value.as_object_mut() else {
@@ -444,6 +450,19 @@ pub fn compose_payload(
         }
         if let Some(sv) = severity {
             obj.insert("severity".to_string(), serde_json::json!(sv));
+        }
+        for kv in fields {
+            let Some((k, v)) = kv.split_once('=') else {
+                bail!("--field expects KEY=VALUE (got '{kv}')");
+            };
+            let value = if let Ok(n) = v.parse::<f64>() {
+                serde_json::json!(n)
+            } else if v == "true" || v == "false" {
+                serde_json::json!(v == "true")
+            } else {
+                serde_json::json!(v)
+            };
+            obj.insert(k.trim().to_string(), value);
         }
         if !tags.is_empty() {
             obj.insert("tags".to_string(), serde_json::json!(tags));

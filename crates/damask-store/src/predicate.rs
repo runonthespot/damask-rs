@@ -72,13 +72,8 @@ impl Predicate {
     pub fn parse(s: &str) -> Result<Self, StoreError> {
         let (field, op, value) = Self::parse_raw(s)?;
 
-        if !KNOWN_FIELDS.contains(&field.as_str()) {
-            return Err(StoreError::Io(format!(
-                "unknown field '{}' in predicate. Valid fields: {}. Examples: rel=risk, confidence>0.8, tags~security",
-                field,
-                KNOWN_FIELDS.join(", "),
-            )));
-        }
+        // Unknown fields fall through to payload lookup — domains bring
+        // their own fields, and every payload field is filterable.
 
         Ok(Predicate { field, op, value })
     }
@@ -133,12 +128,6 @@ impl Predicate {
                     false
                 }
             }
-            "severity" => {
-                let payload: serde_json::Value =
-                    serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
-                let env = PayloadEnvelope::new(&payload);
-                self.compare_str(env.severity().unwrap_or(""))
-            }
             "status" => {
                 let payload: serde_json::Value =
                     serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
@@ -180,7 +169,29 @@ impl Predicate {
                 };
                 self.compare_str(lifecycle)
             }
-            _ => false,
+            // Any other field: look it up in the payload — the protocol
+            // doesn't privilege one domain's vocabulary over another's.
+            _ => {
+                let payload: serde_json::Value =
+                    serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+                match payload.get(&self.field) {
+                    Some(serde_json::Value::String(v)) => self.compare_str(v),
+                    Some(serde_json::Value::Number(n)) => {
+                        n.as_f64().map(|f| self.compare_num(f, {
+                            match self.value.parse::<f64>() { Ok(v) => v, Err(_) => return false }
+                        })).unwrap_or(false)
+                    }
+                    Some(serde_json::Value::Bool(b)) => self.compare_str(if *b { "true" } else { "false" }),
+                    Some(serde_json::Value::Array(items)) => match self.op {
+                        CompareOp::Eq => items.iter().any(|i| i.as_str() == Some(self.value.as_str())),
+                        CompareOp::Contains => items
+                            .iter()
+                            .any(|i| i.as_str().is_some_and(|t| t.contains(self.value.as_str()))),
+                        _ => false,
+                    },
+                    _ => false,
+                }
+            }
         }
     }
 
@@ -430,12 +441,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_unknown_field_returns_error() {
-        let err = Predicate::parse("bogus=value").unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("unknown field 'bogus'"), "got: {msg}");
-        assert!(msg.contains("rel"), "should list valid fields, got: {msg}");
-        assert!(msg.contains("Examples:") || msg.contains("rel=risk"), "should have examples, got: {msg}");
+    fn unknown_fields_fall_through_to_payload() {
+        // Domains bring their own vocabulary: any payload field is
+        // filterable without damask knowing it exists.
+        let p = Predicate::parse("jurisdiction=EU").unwrap();
+        let edge = EdgeRow {
+            id: "e_1".to_string(),
+            from_id: None,
+            to_id: None,
+            rel: "risk".to_string(),
+            payload: r#"{"summary":"x","jurisdiction":"EU","pages":42}"#.to_string(),
+            ns: "legal".to_string(),
+            ts: "2025-01-01T00:00:00Z".to_string(),
+            agent: None,
+            is_active: true,
+            is_closed: false,
+        };
+        assert!(p.matches(&edge, 0, 0));
+        assert!(!Predicate::parse("jurisdiction=US").unwrap().matches(&edge, 0, 0));
+        // Numeric payload fields compare numerically.
+        assert!(Predicate::parse("pages>40").unwrap().matches(&edge, 0, 0));
+        // Absent fields simply don't match.
+        assert!(!Predicate::parse("nonexistent=x").unwrap().matches(&edge, 0, 0));
     }
 
     #[test]

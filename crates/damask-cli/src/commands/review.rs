@@ -91,6 +91,7 @@ pub fn run(format: Format, markdown: bool) -> Result<()> {
                 now,
                 resolution_weight,
                 signal_density,
+                schema_factor: 1.0,
             }
         })
         .collect();

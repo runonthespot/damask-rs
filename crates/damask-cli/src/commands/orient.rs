@@ -246,6 +246,11 @@ pub(crate) fn collect(rel_filter: Option<&str>, tag_filter: Option<&str>, uncont
                 let effective_ts = chrono::DateTime::parse_from_rfc3339(&edge.ts)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or(now);
+                let schema_factor = {
+                    let payload: serde_json::Value =
+                        serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+                    config.schema_rank_factor(&edge.ns, &payload)
+                };
                 RankingInput {
                     edge: edge.clone(),
                     endorsement_count: endorse_counts.get(&edge.id).copied().unwrap_or(0),
@@ -255,6 +260,7 @@ pub(crate) fn collect(rel_filter: Option<&str>, tag_filter: Option<&str>, uncont
                     now,
                     resolution_weight,
                     signal_density,
+                    schema_factor,
                 }
             })
             .collect();

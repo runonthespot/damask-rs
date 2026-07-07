@@ -19,6 +19,7 @@ pub fn run(
     confidence: Option<f64>,
     action: Option<&str>,
     severity: Option<&str>,
+    fields: &[String],
     tags: &[String],
     ns_override: Option<&str>,
     format: Format,
@@ -41,8 +42,15 @@ pub fn run(
         confidence,
         action,
         severity,
+        fields,
         tags,
     )?;
+
+    // Namespace schemas assert domain vocabulary — validate before writing.
+    let config = project.read_config().map_err(|e| anyhow::anyhow!("{}", e))?;
+    config
+        .validate_ns_payload(&ns, &payload_value)
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     let edge = helpers::build_edge(from_id, to_id, rel, payload_value, &ns);
 

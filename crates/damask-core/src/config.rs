@@ -29,9 +29,108 @@ pub struct NamespaceConfig {
     /// Description of this namespace's purpose.
     #[serde(default)]
     pub description: Option<String>,
+
+    /// Payload schema asserted by this namespace. Damask is a protocol —
+    /// domains bring their own fields. `None` = the built-in default
+    /// convention applies (severity); `Some({})` = explicitly schema-less.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<HashMap<String, FieldSchema>>,
+}
+
+/// Declared semantics for one payload field within a namespace.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FieldSchema {
+    /// Allowed values; writes outside this set are rejected with a
+    /// teaching error. Omit for free-form fields.
+    #[serde(default, rename = "enum", skip_serializing_if = "Option::is_none")]
+    pub enum_values: Option<Vec<String>>,
+
+    /// Ranking multipliers per value — how this field orders attention.
+    /// Domain semantics live here as data, not in damask's code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rank: Option<HashMap<String, f64>>,
+
+    /// What this field means, for humans and agents reading the config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// The built-in default convention, used only when a namespace asserts no
+/// schema at all: `severity` (critical|high|medium|low) with modest rank
+/// weights. It is a CONVENTION, not core — declare any schema (even `{}`)
+/// on a namespace to replace or remove it.
+pub fn default_convention_schema() -> HashMap<String, FieldSchema> {
+    let mut rank = HashMap::new();
+    rank.insert("critical".to_string(), 1.12);
+    rank.insert("high".to_string(), 1.06);
+    rank.insert("medium".to_string(), 1.0);
+    rank.insert("low".to_string(), 0.92);
+    let mut m = HashMap::new();
+    m.insert(
+        "severity".to_string(),
+        FieldSchema {
+            enum_values: Some(
+                ["critical", "high", "medium", "low"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            ),
+            rank: Some(rank),
+            description: Some("How much it matters — orthogonal to confidence".to_string()),
+        },
+    );
+    m
 }
 
 impl DamaskConfig {
+    /// The effective payload schema for a namespace: its own declaration,
+    /// or the default convention when it declares none.
+    pub fn effective_schema(&self, ns: &str) -> HashMap<String, FieldSchema> {
+        match self.namespaces.get(ns).and_then(|c| c.schema.clone()) {
+            Some(schema) => schema,
+            None => default_convention_schema(),
+        }
+    }
+
+    /// Ranking multiplier from the namespace's schema: for every declared
+    /// field with rank weights, multiply by the weight of the payload's
+    /// value. Unknown values and undeclared fields are neutral.
+    pub fn schema_rank_factor(&self, ns: &str, payload: &serde_json::Value) -> f64 {
+        let mut factor = 1.0;
+        for (field, fs) in self.effective_schema(ns) {
+            let (Some(rank), Some(value)) = (
+                fs.rank.as_ref(),
+                payload.get(&field).and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            if let Some(w) = rank.get(value) {
+                factor *= w;
+            }
+        }
+        factor
+    }
+
+    /// Validate a payload against the namespace's schema (enum fields).
+    /// Returns a teaching error naming the field and allowed values.
+    pub fn validate_ns_payload(&self, ns: &str, payload: &serde_json::Value) -> Result<(), String> {
+        for (field, fs) in self.effective_schema(ns) {
+            let (Some(allowed), Some(value)) = (
+                fs.enum_values.as_ref(),
+                payload.get(&field).and_then(|v| v.as_str()),
+            ) else {
+                continue;
+            };
+            if !allowed.iter().any(|a| a == value) {
+                return Err(format!(
+                    "namespace '{ns}' schema: {field} must be one of [{}] (got {value:?})",
+                    allowed.join(", ")
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Get the decay half-life for a namespace, falling back to project default, then 180 days.
     pub fn decay_half_life_days(&self, ns: &str) -> u32 {
         self.namespaces
