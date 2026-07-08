@@ -136,7 +136,8 @@ pub fn run(force_claude: bool, force_codex: bool, no_agents: bool) -> Result<()>
     let root = &project.root;
     let do_claude =
         force_claude || (!force_codex && (root.join(".claude").is_dir() || claude_env_present()));
-    let do_codex = force_codex || (!force_claude && root.join(".agents").is_dir());
+    let do_codex = force_codex
+        || (!force_claude && (root.join(".agents").is_dir() || root.join("AGENTS.md").exists()));
 
     if do_claude {
         scaffold_claude(root)?;
@@ -282,6 +283,58 @@ fn ensure_hook(
     Ok(true)
 }
 
+// Codex has no hook loop (no SessionStart briefing / PostToolUse peek), so
+// the loop must be spelled out where Codex actually reads it: AGENTS.md.
+// Marked block, replaced in place on re-run to stay current.
+const AGENTS_BEGIN: &str = "<!-- damask:begin -->";
+const AGENTS_END: &str = "<!-- damask:end -->";
+const AGENTS_BLOCK: &str = "<!-- damask:begin -->
+## Damask knowledge graph
+
+This repo has a damask knowledge graph in `.damask/` — verified findings
+(risks, gotchas, decisions) pinned to exact code regions by the agents who
+worked here before you. Codex has no automatic hook loop, so **run the loop
+yourself**:
+
+- **Session start:** `damask briefing` — inherit what's known before exploring.
+- **Before editing a file:** `damask at <file>` — check what's recorded there.
+- **As you work:** record durable findings and signal —
+  `damask record <file> <start> <end> <rel> -m \"what you found\" -c 0.9`,
+  then `damask endorse <id>` (confirm) / `damask dispute <id> --reason <r>`
+  (contradict) / `damask close <id> --reason resolved` (done). IDs accept
+  unique prefixes; signalling shows you the edge's history.
+
+Record **judgment** — what surprised you, what broke, why a decision went a
+certain way — not descriptions of what the code plainly says. Full
+reference: `.agents/skills/damask/SKILL.md`.
+<!-- damask:end -->";
+
+/// Ensure AGENTS.md carries the damask block — Codex's real load path.
+/// Replaces the marked block on re-run (stays current), else appends.
+fn ensure_agents_md(root: &Path) -> Result<()> {
+    let path = root.join("AGENTS.md");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let updated = if let (Some(b), Some(e)) = (existing.find(AGENTS_BEGIN), existing.find(AGENTS_END)) {
+        let end = e + AGENTS_END.len();
+        let mut s = existing.clone();
+        s.replace_range(b..end, AGENTS_BLOCK);
+        if s == existing {
+            println!("  AGENTS.md damask section already current");
+            return Ok(());
+        }
+        println!("  Updated AGENTS.md damask section");
+        s
+    } else if existing.trim().is_empty() {
+        println!("  Created AGENTS.md with damask section");
+        format!("# Agent Guide\n\n{AGENTS_BLOCK}\n")
+    } else {
+        println!("  Added damask section to AGENTS.md");
+        format!("{}\n\n{AGENTS_BLOCK}\n", existing.trim_end())
+    };
+    std::fs::write(&path, updated).context("failed to write AGENTS.md")?;
+    Ok(())
+}
+
 fn scaffold_codex(root: &Path) -> Result<()> {
     let skill_dir = root.join(".agents/skills/damask");
     std::fs::create_dir_all(&skill_dir).context("failed to create .agents/skills/damask/")?;
@@ -291,9 +344,10 @@ fn scaffold_codex(root: &Path) -> Result<()> {
         CODEX_SKILL_MD,
         ".agents/skills/damask/SKILL.md",
     )?;
+    ensure_agents_md(root)?;
 
     println!();
-    println!("Codex CLI skill synced. Damask skill available in Codex.");
+    println!("Codex integration synced: AGENTS.md loads the damask loop; full skill in .agents/skills/damask/.");
     Ok(())
 }
 
