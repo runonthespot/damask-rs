@@ -43,7 +43,7 @@ damask confirm <span_or_edge_id>     # drifted anchor still true — re-anchors 
 damask triage                        # find rot, get ready-to-run bulk closes (never auto)
 damask sweep --reanchor              # bulk-heal every drifted anchor in one pass
 ```
-Use `close` when a finding is resolved, `dispute` only when it is wrong. `--reason` accepts the templates or any free text (`--reason "superseded by PR #42"`). Investigated a risk and dismissed it? Record it with `"status":"ruled_out"` — it sinks in every ranking, and `damask triage --close-ruled-out` retires it later.
+Use `close` when a finding is resolved, `dispute` only when it is wrong. Endorse/dispute/close now SHOW you the edge's history (its claim and prior signals) as you act — read it: if you are contradicting work other sessions confirmed, the command flags the edge as contested, and your payload should cite the evidence for the contradiction. `--reason` accepts the templates or any free text (`--reason "superseded by PR #42"`). Investigated a risk and dismissed it? Record it with `"status":"ruled_out"` — it sinks in every ranking, and `damask triage --close-ruled-out` retires it later.
 
 **Fan-outs / parallel agents:** concurrent appends are torn-write-safe (single atomic write per batch — tested under 8 parallel writers). Per-agent namespaces are for ISOLATION of concerns, not safety. Never `ns set` in a parallel agent (it is a shared file); set the `DAMASK_NS` env var per process or pass `--ns` instead. For bulk writes, `damask batch --stdin` creates many facts atomically with `$N` back-references.
 

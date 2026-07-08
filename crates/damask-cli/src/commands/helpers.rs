@@ -1,10 +1,83 @@
 use anyhow::{bail, Context};
-use damask_core::{DamaskId, Edge, EdgeId, Freshness, Recency, Resolution, Span, SpanId};
+use damask_core::{DamaskId, Edge, EdgeId, Freshness, PayloadEnvelope, Recency, Resolution, Span, SpanId};
 use damask_store::index::query::{EdgeRow, SpanRow};
-use damask_store::{DamaskProject, IndexQuery};
+use damask_store::{update_index_with_mode, DamaskProject, IndexMode, IndexQuery};
 use std::path::Path;
 
 use crate::error::Result;
+
+/// Before an agent endorses/disputes/closes an edge, show it what it is
+/// signalling against — the claim and its prior signals — so the decision
+/// is made against the history, not blind. Convergent verification only
+/// works if a dispute knows it is contradicting confirmed work. `verb` is
+/// "endorsing" | "disputing" | "closing". Prints nothing if the edge or
+/// index can't be read (never blocks the write).
+pub fn print_signal_context(project: &DamaskProject, edge_id: &str, verb: &str) {
+    let db = project.damask_dir.join("index.db");
+    let edges_dir = project.damask_dir.join("edges");
+    let Ok(conn) = update_index_with_mode(&db, &edges_dir, IndexMode::ViewsPreferred) else {
+        return;
+    };
+    let q = IndexQuery::new(&conn);
+    let Ok(Some(claim)) = q.edge_by_id(edge_id) else {
+        return;
+    };
+    let payload: serde_json::Value = serde_json::from_str(&claim.payload).unwrap_or_default();
+    let env = PayloadEnvelope::new(&payload);
+    let conf = env.confidence().map(|c| format!(" ({c:.2})")).unwrap_or_default();
+    let summary = damask_core::truncate_str(env.summary().unwrap_or(""), 90);
+    let who = claim.agent.as_deref().unwrap_or("unknown");
+    let date = claim.ts.split('T').next().unwrap_or(&claim.ts);
+    let endorsements = q.endorsement_count(edge_id).unwrap_or(0);
+    let disputes = q.dispute_count(edge_id).unwrap_or(0);
+
+    println!("  context — you are {verb} this edge:");
+    println!("    claim: [{}]{} {}  (by {}, {})", claim.rel, conf, summary, who, date);
+
+    let signals = q.edges_targeting(edge_id).unwrap_or_default();
+    let mut lines: Vec<(String, String)> = Vec::new();
+    for s in &signals {
+        let sp: serde_json::Value = serde_json::from_str(&s.payload).unwrap_or_default();
+        let reason = PayloadEnvelope::new(&sp).summary().unwrap_or("").to_string();
+        let sa = s.agent.as_deref().unwrap_or("unknown").to_string();
+        let sd = s.ts.split('T').next().unwrap_or(&s.ts).to_string();
+        let mark = match s.rel.as_str() {
+            "endorsed" => "\u{2713} endorsed",
+            "disputed" => "\u{2717} disputed",
+            "closed" => "\u{25CF} closed",
+            other => other,
+        };
+        let tail = if reason.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", damask_core::truncate_str(&reason, 70))
+        };
+        lines.push((s.ts.clone(), format!("    {mark} by {sa} ({sd}){tail}")));
+    }
+    if lines.is_empty() {
+        println!("    history: none yet — you are the first to signal on this edge.");
+    } else {
+        println!("    history ({endorsements} endorsements, {disputes} disputes):");
+        lines.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, l) in lines.iter().take(6) {
+            println!("{l}");
+        }
+        if lines.len() > 6 {
+            println!("    … {} earlier (damask why {})", lines.len() - 6, edge_id);
+        }
+    }
+
+    let contested = match verb {
+        "disputing" | "closing" if endorsements > 0 => {
+            Some(format!("{endorsements} session(s) endorsed this"))
+        }
+        "endorsing" if disputes > 0 => Some(format!("{disputes} dispute(s) stand against this")),
+        _ => None,
+    };
+    if let Some(msg) = contested {
+        println!("    \u{26A0} contested: {msg} — make your payload cite the evidence for the contradiction.");
+    }
+}
 
 /// Resolution weight from a span row's stored freshness columns.
 pub fn span_freshness_weight(span: &SpanRow) -> f64 {

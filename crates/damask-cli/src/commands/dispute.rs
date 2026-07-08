@@ -133,6 +133,8 @@ pub fn run(
             .map_err(|e| anyhow::anyhow!("{}", e))
             .context(format!("'{edge_id}' is not a valid edge ID"))?;
 
+        super::helpers::print_signal_context(&project, edge_id, "disputing");
+
         let edge = Edge {
             id: EdgeId::new(),
             from: Some(target),
