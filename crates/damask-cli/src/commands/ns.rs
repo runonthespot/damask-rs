@@ -33,8 +33,7 @@ pub fn run(action: NsAction, format: Format) -> Result<()> {
             // Build index for health metrics
             let db_path = project.damask_dir.join("index.db");
             let edges_dir = project.damask_dir.join("edges");
-            let conn =
-                update_index(&db_path, &edges_dir).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let conn = update_index(&db_path, &edges_dir).map_err(|e| anyhow::anyhow!("{}", e))?;
             let q = IndexQuery::new(&conn);
 
             match format {

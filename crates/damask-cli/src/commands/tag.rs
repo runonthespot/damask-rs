@@ -88,8 +88,15 @@ pub fn run(edge_id: &str, new_tags: &[String], format: Format) -> Result<()> {
         Format::Human => println!(
             "Tagged {} {} (now: {})",
             edge_id,
-            added.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" "),
-            tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" "),
+            added
+                .iter()
+                .map(|t| format!("#{t}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+            tags.iter()
+                .map(|t| format!("#{t}"))
+                .collect::<Vec<_>>()
+                .join(" "),
         ),
         Format::Json => println!(
             "{}",

@@ -1,0 +1,68 @@
+name: Release
+
+# Tag a release to publish. Requires the CARGO_REGISTRY_TOKEN secret
+# (Settings → Secrets → Actions) for the crates.io publish job.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish-crates:
+    name: publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Publish (dependency order, wait for index between)
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::error::CARGO_REGISTRY_TOKEN is not set — add it in repo secrets to publish."
+            exit 1
+          fi
+          for crate in damask-core damask-resolve damask-store damask-tui damask; do
+            echo "::group::publish $crate"
+            # --no-verify: the workspace is already tested in CI; retry a few
+            # times while the registry index catches up with prior crates.
+            for attempt in 1 2 3 4 5; do
+              if cargo publish -p "$crate"; then break; fi
+              echo "retry $attempt for $crate (waiting for index)…"
+              sleep 30
+            done
+            echo "::endgroup::"
+          done
+
+  release-binaries:
+    name: build binaries — ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binary
+        run: cargo build --release --locked -p damask --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          tar -czf damask-${{ matrix.target }}.tar.gz \
+            -C target/${{ matrix.target }}/release damask
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: damask-${{ matrix.target }}.tar.gz

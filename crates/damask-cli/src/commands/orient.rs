@@ -43,7 +43,6 @@ pub(crate) struct SuspectSpan {
     pub(crate) path: String,
     pub(crate) lines: Option<(u32, u32)>,
     pub(crate) resolution: String,
-    pub(crate) recency: String,
     pub(crate) open_edge_count: usize,
 }
 
@@ -127,7 +126,7 @@ fn passes_filters(
             serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
         let env = PayloadEnvelope::new(&payload);
         let tags = env.tags().unwrap_or_default();
-        if !tags.iter().any(|t| *t == tag) {
+        if !tags.contains(&tag) {
             return false;
         }
     }
@@ -137,7 +136,13 @@ fn passes_filters(
     true
 }
 
-pub fn run(format: Format, rel_filter: Option<&str>, tag_filter: Option<&str>, uncontested: bool, show_closed: bool) -> Result<()> {
+pub fn run(
+    format: Format,
+    rel_filter: Option<&str>,
+    tag_filter: Option<&str>,
+    uncontested: bool,
+    show_closed: bool,
+) -> Result<()> {
     let data = collect(rel_filter, tag_filter, uncontested, show_closed)?;
 
     match format {
@@ -149,7 +154,12 @@ pub fn run(format: Format, rel_filter: Option<&str>, tag_filter: Option<&str>, u
 }
 
 /// Gather orientation data from the index. Shared by `orient` and `briefing`.
-pub(crate) fn collect(rel_filter: Option<&str>, tag_filter: Option<&str>, uncontested: bool, show_closed: bool) -> Result<OrientData> {
+pub(crate) fn collect(
+    rel_filter: Option<&str>,
+    tag_filter: Option<&str>,
+    uncontested: bool,
+    show_closed: bool,
+) -> Result<OrientData> {
     let cwd = env::current_dir().context("failed to get current directory")?;
     let project = DamaskProject::discover(&cwd)
         .map_err(|e| anyhow::anyhow!("{}", e))
@@ -167,7 +177,8 @@ pub(crate) fn collect(rel_filter: Option<&str>, tag_filter: Option<&str>, uncont
     let all_edges = if show_closed {
         q.all_active_edges().map_err(|e| anyhow::anyhow!("{}", e))?
     } else {
-        q.all_active_open_edges().map_err(|e| anyhow::anyhow!("{}", e))?
+        q.all_active_open_edges()
+            .map_err(|e| anyhow::anyhow!("{}", e))?
     };
 
     // Bulk lookups — one query each, instead of per-edge/per-span loops.
@@ -216,7 +227,10 @@ pub(crate) fn collect(rel_filter: Option<&str>, tag_filter: Option<&str>, uncont
     // Filter edges before bucketing
     let has_filters = rel_filter.is_some() || tag_filter.is_some() || uncontested;
     let filtered_edges: Vec<&EdgeRow> = if has_filters {
-        all_edges.iter().filter(|e| passes_filters(e, rel_filter, tag_filter, uncontested, &dispute_counts)).collect()
+        all_edges
+            .iter()
+            .filter(|e| passes_filters(e, rel_filter, tag_filter, uncontested, &dispute_counts))
+            .collect()
     } else {
         all_edges.iter().collect()
     };
@@ -304,7 +318,10 @@ pub(crate) fn collect(rel_filter: Option<&str>, tag_filter: Option<&str>, uncont
             }
         }
         if let Some(span) = edge_target_span_id(edge).and_then(|id| spans_map.get(id)) {
-            if matches!(span.resolution.as_deref(), Some("missing") | Some("unresolved")) {
+            if matches!(
+                span.resolution.as_deref(),
+                Some("missing") | Some("unresolved")
+            ) {
                 stale_anchored += 1;
             }
         }
@@ -334,7 +351,6 @@ pub(crate) fn collect(rel_filter: Option<&str>, tag_filter: Option<&str>, uncont
                 _ => None,
             },
             resolution: resolution.to_string(),
-            recency: recency.to_string(),
             open_edge_count,
         });
     }
@@ -401,14 +417,17 @@ fn print_human(data: &OrientData) {
     println!();
     println!("  Namespaces");
     for ns in &data.namespaces {
-        let date = ns.last_modified
+        let date = ns
+            .last_modified
             .as_deref()
             .and_then(|ts| ts.split('T').next())
             .unwrap_or("?");
         let marker = if ns.name == data.active_ns { " *" } else { "" };
 
         // Build rel summary
-        let mut rel_parts: Vec<String> = ns.rels.iter()
+        let mut rel_parts: Vec<String> = ns
+            .rels
+            .iter()
             .map(|(k, v)| format!("{} {}", v, k))
             .collect();
         rel_parts.sort();
@@ -418,7 +437,10 @@ fn print_human(data: &OrientData) {
             format!(": {}", rel_parts.join(", "))
         };
 
-        println!("    {}{marker}  ({} edges{rel_summary} — last: {date})", ns.name, ns.edge_count);
+        println!(
+            "    {}{marker}  ({} edges{rel_summary} — last: {date})",
+            ns.name, ns.edge_count
+        );
     }
 
     // Sections — one per rel type, sorted by count
@@ -502,7 +524,9 @@ fn print_section(title: &str, edges: &[EdgeSummary]) {
 fn summaries_to_json(edges: &[EdgeSummary], limit: usize) -> serde_json::Value {
     let total = edges.len();
     let shown = total.min(limit);
-    let items: Vec<serde_json::Value> = edges.iter().take(limit)
+    let items: Vec<serde_json::Value> = edges
+        .iter()
+        .take(limit)
         .map(|e| {
             serde_json::json!({
                 "id": e.id,
@@ -527,18 +551,24 @@ fn summaries_to_json(edges: &[EdgeSummary], limit: usize) -> serde_json::Value {
 }
 
 fn print_json(data: &OrientData) {
-    let ns_list: Vec<serde_json::Value> = data.namespaces.iter().map(|ns| {
-        let rels: serde_json::Value = ns.rels.iter()
-            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
-            .collect::<serde_json::Map<String, serde_json::Value>>()
-            .into();
-        serde_json::json!({
-            "name": ns.name,
-            "edge_count": ns.edge_count,
-            "last_modified": ns.last_modified,
-            "rels": rels,
+    let ns_list: Vec<serde_json::Value> = data
+        .namespaces
+        .iter()
+        .map(|ns| {
+            let rels: serde_json::Value = ns
+                .rels
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+                .collect::<serde_json::Map<String, serde_json::Value>>()
+                .into();
+            serde_json::json!({
+                "name": ns.name,
+                "edge_count": ns.edge_count,
+                "last_modified": ns.last_modified,
+                "rels": rels,
+            })
         })
-    }).collect();
+        .collect();
 
     // Build dynamic sections map
     let mut sections_map = serde_json::Map::new();

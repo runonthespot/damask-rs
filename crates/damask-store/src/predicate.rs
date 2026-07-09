@@ -3,12 +3,6 @@ use damask_core::PayloadEnvelope;
 use crate::index::query::EdgeRow;
 use crate::StoreError;
 
-/// Valid field names for predicates.
-const KNOWN_FIELDS: &[&str] = &[
-    "rel", "ns", "agent", "endorsed", "disputed", "confidence", "status", "severity", "summary", "tags",
-    "lifecycle",
-];
-
 /// A simple predicate: `field op value`.
 #[derive(Debug, Clone)]
 pub struct Predicate {
@@ -68,7 +62,8 @@ impl Predicate {
     }
 
     /// Parse a predicate string like `rel=risk` or `confidence>0.8`.
-    /// Returns an error listing valid fields if the field name is unknown.
+    /// Any field name is accepted — unknown fields resolve against the
+    /// edge's payload, so a namespace's own vocabulary is filterable.
     pub fn parse(s: &str) -> Result<Self, StoreError> {
         let (field, op, value) = Self::parse_raw(s)?;
 
@@ -91,7 +86,10 @@ impl Predicate {
                 if let Ok(val) = self.value.parse::<f64>() {
                     self.compare_num(endorsement_count as f64, val)
                 } else {
-                    eprintln!("warning: cannot parse '{}' as a number for field 'endorsed'", self.value);
+                    eprintln!(
+                        "warning: cannot parse '{}' as a number for field 'endorsed'",
+                        self.value
+                    );
                     false
                 }
             }
@@ -108,7 +106,10 @@ impl Predicate {
                 } else if let Ok(val) = self.value.parse::<f64>() {
                     self.compare_num(dispute_count as f64, val)
                 } else {
-                    eprintln!("warning: cannot parse '{}' as a number for field 'disputed'", self.value);
+                    eprintln!(
+                        "warning: cannot parse '{}' as a number for field 'disputed'",
+                        self.value
+                    );
                     false
                 }
             }
@@ -121,7 +122,10 @@ impl Predicate {
                     if let Ok(val) = self.value.parse::<f64>() {
                         self.compare_num(conf, val)
                     } else {
-                        eprintln!("warning: cannot parse '{}' as a number for field 'confidence'", self.value);
+                        eprintln!(
+                            "warning: cannot parse '{}' as a number for field 'confidence'",
+                            self.value
+                        );
                         false
                     }
                 } else {
@@ -176,14 +180,24 @@ impl Predicate {
                     serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
                 match payload.get(&self.field) {
                     Some(serde_json::Value::String(v)) => self.compare_str(v),
-                    Some(serde_json::Value::Number(n)) => {
-                        n.as_f64().map(|f| self.compare_num(f, {
-                            match self.value.parse::<f64>() { Ok(v) => v, Err(_) => return false }
-                        })).unwrap_or(false)
+                    Some(serde_json::Value::Number(n)) => n
+                        .as_f64()
+                        .map(|f| {
+                            self.compare_num(f, {
+                                match self.value.parse::<f64>() {
+                                    Ok(v) => v,
+                                    Err(_) => return false,
+                                }
+                            })
+                        })
+                        .unwrap_or(false),
+                    Some(serde_json::Value::Bool(b)) => {
+                        self.compare_str(if *b { "true" } else { "false" })
                     }
-                    Some(serde_json::Value::Bool(b)) => self.compare_str(if *b { "true" } else { "false" }),
                     Some(serde_json::Value::Array(items)) => match self.op {
-                        CompareOp::Eq => items.iter().any(|i| i.as_str() == Some(self.value.as_str())),
+                        CompareOp::Eq => items
+                            .iter()
+                            .any(|i| i.as_str() == Some(self.value.as_str())),
                         CompareOp::Contains => items
                             .iter()
                             .any(|i| i.as_str().is_some_and(|t| t.contains(self.value.as_str()))),
@@ -222,9 +236,9 @@ impl Predicate {
 
 /// Check if any predicate in the slice requires inactive edges (e.g. lifecycle=superseded).
 pub fn needs_inactive_edges(preds: &[Predicate]) -> bool {
-    preds.iter().any(|p| {
-        p.field == "lifecycle" && (p.value == "superseded" || p.value == "closed")
-    })
+    preds
+        .iter()
+        .any(|p| p.field == "lifecycle" && (p.value == "superseded" || p.value == "closed"))
 }
 
 #[cfg(test)]
@@ -458,18 +472,40 @@ mod tests {
             is_closed: false,
         };
         assert!(p.matches(&edge, 0, 0));
-        assert!(!Predicate::parse("jurisdiction=US").unwrap().matches(&edge, 0, 0));
+        assert!(!Predicate::parse("jurisdiction=US")
+            .unwrap()
+            .matches(&edge, 0, 0));
         // Numeric payload fields compare numerically.
         assert!(Predicate::parse("pages>40").unwrap().matches(&edge, 0, 0));
         // Absent fields simply don't match.
-        assert!(!Predicate::parse("nonexistent=x").unwrap().matches(&edge, 0, 0));
+        assert!(!Predicate::parse("nonexistent=x")
+            .unwrap()
+            .matches(&edge, 0, 0));
     }
 
     #[test]
     fn parse_known_fields_succeed() {
-        for field in super::KNOWN_FIELDS {
+        // Predicates are now field-agnostic (any payload field is
+        // filterable); the canonical fields must still parse cleanly.
+        let fields = [
+            "rel",
+            "ns",
+            "agent",
+            "endorsed",
+            "disputed",
+            "confidence",
+            "status",
+            "severity",
+            "summary",
+            "tags",
+            "lifecycle",
+        ];
+        for field in fields {
             let input = format!("{field}=test");
-            assert!(Predicate::parse(&input).is_ok(), "field '{field}' should parse");
+            assert!(
+                Predicate::parse(&input).is_ok(),
+                "field '{field}' should parse"
+            );
         }
     }
 

@@ -12,7 +12,11 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Init { claude, codex, no_agents } => commands::init::run(claude, codex, no_agents),
+        Command::Init {
+            claude,
+            codex,
+            no_agents,
+        } => commands::init::run(claude, codex, no_agents),
         Command::Bootstrap { force } => commands::bootstrap::run(force, cli.format),
         Command::Help { topic } => commands::help::run(topic.as_deref()),
 
@@ -111,7 +115,17 @@ fn main() -> anyhow::Result<()> {
             uncontested,
             show_closed,
             offset,
-        } => commands::at::run(&location, cli.format, all, no_rank, rel.as_deref(), tag.as_deref(), uncontested, show_closed, offset),
+        } => commands::at::run(
+            &location,
+            cli.format,
+            all,
+            no_rank,
+            rel.as_deref(),
+            tag.as_deref(),
+            uncontested,
+            show_closed,
+            offset,
+        ),
         Command::Where {
             predicates,
             since,
@@ -119,7 +133,16 @@ fn main() -> anyhow::Result<()> {
             offset,
             show_closed,
             sort,
-        } => commands::where_cmd::run(&predicates, since.as_deref(), limit, offset, show_closed, sort, cli.format, cli.ns.as_deref()),
+        } => commands::where_cmd::run(
+            &predicates,
+            since.as_deref(),
+            limit,
+            offset,
+            show_closed,
+            sort,
+            cli.format,
+            cli.ns.as_deref(),
+        ),
         Command::Follow { id, rel, depth } => {
             commands::follow::run(&id, rel.as_deref(), depth, cli.format)
         }
@@ -162,7 +185,13 @@ fn main() -> anyhow::Result<()> {
             tag,
             uncontested,
             show_closed,
-        } => commands::orient::run(cli.format, rel.as_deref(), tag.as_deref(), uncontested, show_closed),
+        } => commands::orient::run(
+            cli.format,
+            rel.as_deref(),
+            tag.as_deref(),
+            uncontested,
+            show_closed,
+        ),
         Command::Briefing => commands::briefing::run(cli.format),
         Command::Peek {
             file,
@@ -190,11 +219,33 @@ fn main() -> anyhow::Result<()> {
             close_deleted,
             close_refuted,
             close_ruled_out,
-        } => commands::triage::run(close_deleted.as_deref(), close_refuted, close_ruled_out, cli.format),
+        } => commands::triage::run(
+            close_deleted.as_deref(),
+            close_refuted,
+            close_ruled_out,
+            cli.format,
+        ),
         Command::Review { markdown } => commands::review::run(cli.format, markdown),
-        Command::Search { query, ns, rel, where_preds, sem, limit, offset, show_closed } => {
-            commands::search::run(&query, ns.as_deref(), rel.as_deref(), &where_preds, sem, limit, offset, show_closed, cli.format)
-        }
+        Command::Search {
+            query,
+            ns,
+            rel,
+            where_preds,
+            sem,
+            limit,
+            offset,
+            show_closed,
+        } => commands::search::run(
+            &query,
+            ns.as_deref(),
+            rel.as_deref(),
+            &where_preds,
+            sem,
+            limit,
+            offset,
+            show_closed,
+            cli.format,
+        ),
         Command::Enrich => commands::enrich::run(cli.format),
         Command::Diff { ns_a, ns_b } => commands::diff::run(&ns_a, &ns_b, cli.format),
         Command::Tui => commands::tui::run(),

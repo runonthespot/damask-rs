@@ -62,12 +62,17 @@ pub struct ResolveResult {
 /// 4. Symbol fallback      → Relocated if symbol found
 /// 5. Snippet fallback     → Relocated if snippet fuzzy-matches
 /// 6. All fail             → Unresolved
-pub fn resolve_span(project_root: &Path, anchor: &SpanAnchor) -> Result<ResolveResult, ResolveError> {
+pub fn resolve_span(
+    project_root: &Path,
+    anchor: &SpanAnchor,
+) -> Result<ResolveResult, ResolveError> {
     let file_path = project_root.join(&anchor.path);
 
     // Step 1: Check file exists — if not, try git rename detection before giving up
     if !file_path.exists() {
-        if let Some(new_rel_path) = detect_rename(project_root, &anchor.path, anchor.commit.as_deref()) {
+        if let Some(new_rel_path) =
+            detect_rename(project_root, &anchor.path, anchor.commit.as_deref())
+        {
             let new_file_path = project_root.join(&new_rel_path);
             if new_file_path.exists() {
                 // File was renamed — continue cascade against the new path
@@ -139,8 +144,7 @@ pub fn resolve_span(project_root: &Path, anchor: &SpanAnchor) -> Result<ResolveR
     }
 
     // Step 5b: If content can't be found in-place, try git rename detection.
-    if let Some(new_rel_path) =
-        detect_rename(project_root, &anchor.path, anchor.commit.as_deref())
+    if let Some(new_rel_path) = detect_rename(project_root, &anchor.path, anchor.commit.as_deref())
     {
         if new_rel_path != anchor.path {
             let new_file_path = project_root.join(&new_rel_path);
@@ -336,13 +340,33 @@ fn search_file_for_symbol(lines: &[String], symbol: &str) -> Option<(u32, u32)> 
 
 /// Check if a line contains a symbol definition.
 fn contains_symbol_def(line: &str, symbol: &str) -> bool {
-    let prefixes = ["fn ", "struct ", "impl ", "enum ", "trait ", "type ",
-                    "def ", "class ", "function ", "const ", "let ", "pub fn ",
-                    "pub struct ", "pub enum ", "pub trait ", "pub type ",
-                    "pub const ", "async fn ", "pub async fn "];
+    let prefixes = [
+        "fn ",
+        "struct ",
+        "impl ",
+        "enum ",
+        "trait ",
+        "type ",
+        "def ",
+        "class ",
+        "function ",
+        "const ",
+        "let ",
+        "pub fn ",
+        "pub struct ",
+        "pub enum ",
+        "pub trait ",
+        "pub type ",
+        "pub const ",
+        "async fn ",
+        "pub async fn ",
+    ];
     for prefix in &prefixes {
         if let Some(rest) = line.strip_prefix(prefix) {
-            let ident: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            let ident: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
             if ident == symbol {
                 return true;
             }
@@ -357,8 +381,8 @@ fn find_block_end(lines: &[String], start_idx: usize, max_lines: usize) -> usize
     let mut depth: i32 = 0;
     let mut found_open = false;
 
-    for i in start_idx..end_limit {
-        for ch in lines[i].chars() {
+    for (offset, line) in lines[start_idx..end_limit].iter().enumerate() {
+        for ch in line.chars() {
             if ch == '{' {
                 depth += 1;
                 found_open = true;
@@ -367,7 +391,7 @@ fn find_block_end(lines: &[String], start_idx: usize, max_lines: usize) -> usize
             }
         }
         if found_open && depth <= 0 {
-            return i + 1;
+            return start_idx + offset + 1;
         }
     }
     // Didn't find matching brace — return the limit
@@ -389,7 +413,8 @@ fn search_file_for_snippet(lines: &[String], snippet: &str) -> Option<(u32, u32)
     for start_idx in 0..lines.len().saturating_sub(window_size - 1) {
         let end_idx = (start_idx + window_size).min(lines.len());
         let window_text = lines[start_idx..end_idx].join(" ");
-        let window_tokens: std::collections::HashSet<&str> = window_text.split_whitespace().collect();
+        let window_tokens: std::collections::HashSet<&str> =
+            window_text.split_whitespace().collect();
 
         if window_tokens.is_empty() {
             continue;
@@ -744,11 +769,23 @@ mod tests {
 
     #[test]
     fn symbol_detection() {
-        assert!(contains_symbol_def("fn validate_token() {", "validate_token"));
-        assert!(contains_symbol_def("pub fn validate_token() {", "validate_token"));
-        assert!(contains_symbol_def("pub async fn validate_token() {", "validate_token"));
+        assert!(contains_symbol_def(
+            "fn validate_token() {",
+            "validate_token"
+        ));
+        assert!(contains_symbol_def(
+            "pub fn validate_token() {",
+            "validate_token"
+        ));
+        assert!(contains_symbol_def(
+            "pub async fn validate_token() {",
+            "validate_token"
+        ));
         assert!(contains_symbol_def("struct MyStruct {", "MyStruct"));
-        assert!(!contains_symbol_def("// fn validate_token", "validate_token"));
+        assert!(!contains_symbol_def(
+            "// fn validate_token",
+            "validate_token"
+        ));
         assert!(!contains_symbol_def("validate_token()", "validate_token"));
     }
 }

@@ -47,8 +47,7 @@ const PEEK_TOOL_MATCHER: &str = "Read|Edit|Write|MultiEdit|NotebookEdit";
 /// adopter of `damask init` is the agent itself, and it should not need
 /// to know about --claude.
 fn claude_env_present() -> bool {
-    std::env::var_os("CLAUDECODE").is_some()
-        || std::env::var_os("CLAUDE_CODE_SESSION_ID").is_some()
+    std::env::var_os("CLAUDECODE").is_some() || std::env::var_os("CLAUDE_CODE_SESSION_ID").is_some()
 }
 
 /// Default namespace from the repo directory name: lowercased, non
@@ -102,10 +101,9 @@ pub fn run(force_claude: bool, force_codex: bool, no_agents: bool) -> Result<()>
             let ns = default_ns_name(&p.root);
             let mut config = p.read_config().map_err(|e| anyhow::anyhow!("{}", e))?;
             config.default_ns = Some(ns.clone());
-            let config_json = serde_json::to_string_pretty(&config)
-                .context("failed to serialize config.json")?;
-            std::fs::write(p.config_path(), config_json)
-                .context("failed to write config.json")?;
+            let config_json =
+                serde_json::to_string_pretty(&config).context("failed to serialize config.json")?;
+            std::fs::write(p.config_path(), config_json).context("failed to write config.json")?;
             println!("  Default namespace: {ns} (change with `damask ns set <name>`)");
 
             p
@@ -202,19 +200,17 @@ fn ensure_damask_allowlisted(doc: &mut serde_json::Value) -> Result<bool> {
         .as_array_mut()
         .context("permissions.allow is not an array")?;
 
-    let already = allow
-        .iter()
-        .any(|v| v.as_str() == Some(DAMASK_PERMISSION));
+    let already = allow.iter().any(|v| v.as_str() == Some(DAMASK_PERMISSION));
 
     if already {
-        println!("  .claude/settings.json already allows \"{}\"", DAMASK_PERMISSION);
+        println!(
+            "  .claude/settings.json already allows \"{}\"",
+            DAMASK_PERMISSION
+        );
         Ok(false)
     } else {
         allow.push(serde_json::Value::String(DAMASK_PERMISSION.to_string()));
-        println!(
-            "  Added \"{}\" to .claude/settings.json",
-            DAMASK_PERMISSION
-        );
+        println!("  Added \"{}\" to .claude/settings.json", DAMASK_PERMISSION);
         Ok(true)
     }
 }
@@ -314,23 +310,24 @@ reference: `.agents/skills/damask/SKILL.md`.
 fn ensure_agents_md(root: &Path) -> Result<()> {
     let path = root.join("AGENTS.md");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let updated = if let (Some(b), Some(e)) = (existing.find(AGENTS_BEGIN), existing.find(AGENTS_END)) {
-        let end = e + AGENTS_END.len();
-        let mut s = existing.clone();
-        s.replace_range(b..end, AGENTS_BLOCK);
-        if s == existing {
-            println!("  AGENTS.md damask section already current");
-            return Ok(());
-        }
-        println!("  Updated AGENTS.md damask section");
-        s
-    } else if existing.trim().is_empty() {
-        println!("  Created AGENTS.md with damask section");
-        format!("# Agent Guide\n\n{AGENTS_BLOCK}\n")
-    } else {
-        println!("  Added damask section to AGENTS.md");
-        format!("{}\n\n{AGENTS_BLOCK}\n", existing.trim_end())
-    };
+    let updated =
+        if let (Some(b), Some(e)) = (existing.find(AGENTS_BEGIN), existing.find(AGENTS_END)) {
+            let end = e + AGENTS_END.len();
+            let mut s = existing.clone();
+            s.replace_range(b..end, AGENTS_BLOCK);
+            if s == existing {
+                println!("  AGENTS.md damask section already current");
+                return Ok(());
+            }
+            println!("  Updated AGENTS.md damask section");
+            s
+        } else if existing.trim().is_empty() {
+            println!("  Created AGENTS.md with damask section");
+            format!("# Agent Guide\n\n{AGENTS_BLOCK}\n")
+        } else {
+            println!("  Added damask section to AGENTS.md");
+            format!("{}\n\n{AGENTS_BLOCK}\n", existing.trim_end())
+        };
     std::fs::write(&path, updated).context("failed to write AGENTS.md")?;
     Ok(())
 }
@@ -383,7 +380,13 @@ fn scaffold_claude(root: &Path) -> Result<()> {
         BRIEFING_HOOK_COMMAND,
         BRIEFING_HOOK_KEY,
     )?;
-    changed |= ensure_hook(&mut doc, "Stop", None, HARVEST_HOOK_COMMAND, HARVEST_HOOK_KEY)?;
+    changed |= ensure_hook(
+        &mut doc,
+        "Stop",
+        None,
+        HARVEST_HOOK_COMMAND,
+        HARVEST_HOOK_KEY,
+    )?;
     changed |= ensure_hook(
         &mut doc,
         "PostToolUse",
@@ -391,7 +394,13 @@ fn scaffold_claude(root: &Path) -> Result<()> {
         PEEK_HOOK_COMMAND,
         PEEK_HOOK_KEY,
     )?;
-    changed |= ensure_hook(&mut doc, "UserPromptSubmit", None, PEEK_HOOK_COMMAND, PEEK_HOOK_KEY)?;
+    changed |= ensure_hook(
+        &mut doc,
+        "UserPromptSubmit",
+        None,
+        PEEK_HOOK_COMMAND,
+        PEEK_HOOK_KEY,
+    )?;
 
     if changed {
         let updated = serde_json::to_string_pretty(&doc)

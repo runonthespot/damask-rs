@@ -133,10 +133,7 @@ fn scan_transcript(transcript_path: &Path, root: &Path) -> Option<SessionActivit
         };
         if let Some(ts) = entry.get("timestamp").and_then(|v| v.as_str()) {
             // ISO-8601 UTC timestamps compare lexicographically.
-            let earlier = activity
-                .window_start
-                .as_deref()
-                .map_or(true, |w| ts < w);
+            let earlier = activity.window_start.as_deref().map_or(true, |w| ts < w);
             if earlier {
                 activity.window_start = Some(ts.to_string());
             }
@@ -144,10 +141,7 @@ fn scan_transcript(transcript_path: &Path, root: &Path) -> Option<SessionActivit
         if entry.get("type").and_then(|v| v.as_str()) != Some("assistant") {
             continue;
         }
-        let Some(items) = entry
-            .pointer("/message/content")
-            .and_then(|v| v.as_array())
-        else {
+        let Some(items) = entry.pointer("/message/content").and_then(|v| v.as_array()) else {
             continue;
         };
         for item in items {
@@ -225,7 +219,10 @@ fn quality_reason(project: &DamaskProject, window_start: Option<&str>) -> Option
         lines.push_str(&format!("- {} — {}\n", issue.edge_id, issue.message));
     }
     if issues.len() > 5 {
-        lines.push_str(&format!("- … and {} more (`damask lint`)\n", issues.len() - 5));
+        lines.push_str(&format!(
+            "- … and {} more (`damask lint`)\n",
+            issues.len() - 5
+        ));
     }
 
     Some(format!(
@@ -296,10 +293,7 @@ mod tests {
 
     fn write_transcript(dir: &Path, lines: &[serde_json::Value]) -> PathBuf {
         let path = dir.join("transcript.jsonl");
-        let content: String = lines
-            .iter()
-            .map(|l| format!("{l}\n"))
-            .collect();
+        let content: String = lines.iter().map(|l| format!("{l}\n")).collect();
         std::fs::write(&path, content).unwrap();
         path
     }
@@ -321,9 +315,18 @@ mod tests {
         let transcript = write_transcript(
             root,
             &[
-                tool_use_line("Edit", serde_json::json!({"file_path": root.join("src/a.rs").to_string_lossy()})),
-                tool_use_line("Write", serde_json::json!({"file_path": root.join("src/a.rs").to_string_lossy()})),
-                tool_use_line("Edit", serde_json::json!({"file_path": root.join("src/b.rs").to_string_lossy()})),
+                tool_use_line(
+                    "Edit",
+                    serde_json::json!({"file_path": root.join("src/a.rs").to_string_lossy()}),
+                ),
+                tool_use_line(
+                    "Write",
+                    serde_json::json!({"file_path": root.join("src/a.rs").to_string_lossy()}),
+                ),
+                tool_use_line(
+                    "Edit",
+                    serde_json::json!({"file_path": root.join("src/b.rs").to_string_lossy()}),
+                ),
             ],
         );
         let activity = scan_transcript(&transcript, root).unwrap();
@@ -338,8 +341,14 @@ mod tests {
         let transcript = write_transcript(
             root,
             &[
-                tool_use_line("Edit", serde_json::json!({"file_path": root.join("src/a.rs").to_string_lossy()})),
-                tool_use_line("Bash", serde_json::json!({"command": "damask record src/a.rs 1 5 risk '{\"summary\":\"x\"}'"})),
+                tool_use_line(
+                    "Edit",
+                    serde_json::json!({"file_path": root.join("src/a.rs").to_string_lossy()}),
+                ),
+                tool_use_line(
+                    "Bash",
+                    serde_json::json!({"command": "damask record src/a.rs 1 5 risk '{\"summary\":\"x\"}'"}),
+                ),
             ],
         );
         let activity = scan_transcript(&transcript, root).unwrap();
@@ -349,9 +358,13 @@ mod tests {
     #[test]
     fn write_detection_survives_flags_and_paths() {
         // Global flags between binary and subcommand.
-        assert!(is_damask_write("damask --ns decisions record src/a.rs 1 5 risk '{}'"));
+        assert!(is_damask_write(
+            "damask --ns decisions record src/a.rs 1 5 risk '{}'"
+        ));
         // Non-PATH invocation.
-        assert!(is_damask_write("./target/debug/damask record src/a.rs 1 5 risk '{}'"));
+        assert!(is_damask_write(
+            "./target/debug/damask record src/a.rs 1 5 risk '{}'"
+        ));
         // Piped batch.
         assert!(is_damask_write("echo 'e_1' | damask endorse --batch"));
         // Read-only commands don't count, even querying a file named record.rs.
@@ -367,7 +380,10 @@ mod tests {
         let root = tmp.path();
         let transcript = write_transcript(
             root,
-            &[tool_use_line("Bash", serde_json::json!({"command": "damask at src/a.rs:10"}))],
+            &[tool_use_line(
+                "Bash",
+                serde_json::json!({"command": "damask at src/a.rs:10"}),
+            )],
         );
         let activity = scan_transcript(&transcript, root).unwrap();
         assert!(!activity.recorded);
@@ -381,9 +397,18 @@ mod tests {
         let transcript = write_transcript(
             root,
             &[
-                tool_use_line("Edit", serde_json::json!({"file_path": root.join(".damask/edges/x.jsonl").to_string_lossy()})),
-                tool_use_line("Edit", serde_json::json!({"file_path": root.join(".claude/settings.json").to_string_lossy()})),
-                tool_use_line("Edit", serde_json::json!({"file_path": "/somewhere/else/entirely.rs"})),
+                tool_use_line(
+                    "Edit",
+                    serde_json::json!({"file_path": root.join(".damask/edges/x.jsonl").to_string_lossy()}),
+                ),
+                tool_use_line(
+                    "Edit",
+                    serde_json::json!({"file_path": root.join(".claude/settings.json").to_string_lossy()}),
+                ),
+                tool_use_line(
+                    "Edit",
+                    serde_json::json!({"file_path": "/somewhere/else/entirely.rs"}),
+                ),
             ],
         );
         let activity = scan_transcript(&transcript, root).unwrap();
@@ -399,7 +424,10 @@ mod tests {
             &path,
             format!(
                 "not json at all\n{}\n",
-                tool_use_line("Edit", serde_json::json!({"file_path": root.join("src/a.rs").to_string_lossy()}))
+                tool_use_line(
+                    "Edit",
+                    serde_json::json!({"file_path": root.join("src/a.rs").to_string_lossy()})
+                )
             ),
         )
         .unwrap();

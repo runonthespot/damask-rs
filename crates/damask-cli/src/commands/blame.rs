@@ -63,53 +63,50 @@ fn print_blame_human(q: &IndexQuery, id: &str) -> Result<()> {
         } else {
             println!("  Span not found: {id}");
         }
-    } else {
-        if let Some(edge) = q.edge_by_id(id).map_err(|e| anyhow::anyhow!("{}", e))? {
-            let p: serde_json::Value =
-                serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
-            let env = PayloadEnvelope::new(&p);
-            let summary = env.summary().unwrap_or("(no summary)");
-            let date = edge.ts.split('T').next().unwrap_or(&edge.ts);
-            let agent = edge.agent.as_deref().unwrap_or("unknown");
-            let active = if edge.is_active { "" } else { " (superseded)" };
+    } else if let Some(edge) = q.edge_by_id(id).map_err(|e| anyhow::anyhow!("{}", e))? {
+        let p: serde_json::Value =
+            serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+        let env = PayloadEnvelope::new(&p);
+        let summary = env.summary().unwrap_or("(no summary)");
+        let date = edge.ts.split('T').next().unwrap_or(&edge.ts);
+        let agent = edge.agent.as_deref().unwrap_or("unknown");
+        let active = if edge.is_active { "" } else { " (superseded)" };
 
-            println!(
-                "  {} [{}] {} {} — {}{}",
-                edge.id, edge.rel, date, agent, summary, active
-            );
+        println!(
+            "  {} [{}] {} {} — {}{}",
+            edge.id, edge.rel, date, agent, summary, active
+        );
 
-            let targeting = q
-                .edges_targeting(id)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-            let superseded_by: Vec<_> =
-                targeting.iter().filter(|e| e.rel == "supersedes").collect();
+        let targeting = q
+            .edges_targeting(id)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let superseded_by: Vec<_> = targeting.iter().filter(|e| e.rel == "supersedes").collect();
 
-            if !superseded_by.is_empty() {
-                println!();
-                println!("  Supersession chain:");
-                for sup in &superseded_by {
-                    if let Some(ref from_id) = sup.from_id {
-                        if let Some(new_edge) = q
-                            .edge_by_id(from_id)
-                            .map_err(|e| anyhow::anyhow!("{}", e))?
-                        {
-                            let np: serde_json::Value = serde_json::from_str(&new_edge.payload)
-                                .unwrap_or(serde_json::json!({}));
-                            let ne = PayloadEnvelope::new(&np);
-                            let ns = ne.summary().unwrap_or("(no summary)");
-                            let nd = new_edge.ts.split('T').next().unwrap_or(&new_edge.ts);
-                            let na = new_edge.agent.as_deref().unwrap_or("unknown");
-                            println!(
-                                "    \u{2192} {} [{}] {} {} — {}",
-                                new_edge.id, new_edge.rel, nd, na, ns
-                            );
-                        }
+        if !superseded_by.is_empty() {
+            println!();
+            println!("  Supersession chain:");
+            for sup in &superseded_by {
+                if let Some(ref from_id) = sup.from_id {
+                    if let Some(new_edge) = q
+                        .edge_by_id(from_id)
+                        .map_err(|e| anyhow::anyhow!("{}", e))?
+                    {
+                        let np: serde_json::Value = serde_json::from_str(&new_edge.payload)
+                            .unwrap_or(serde_json::json!({}));
+                        let ne = PayloadEnvelope::new(&np);
+                        let ns = ne.summary().unwrap_or("(no summary)");
+                        let nd = new_edge.ts.split('T').next().unwrap_or(&new_edge.ts);
+                        let na = new_edge.agent.as_deref().unwrap_or("unknown");
+                        println!(
+                            "    \u{2192} {} [{}] {} {} — {}",
+                            new_edge.id, new_edge.rel, nd, na, ns
+                        );
                     }
                 }
             }
-        } else {
-            println!("  Edge not found: {id}");
         }
+    } else {
+        println!("  Edge not found: {id}");
     }
 
     println!();
@@ -118,9 +115,7 @@ fn print_blame_human(q: &IndexQuery, id: &str) -> Result<()> {
 
 fn print_blame_json(q: &IndexQuery, id: &str) -> Result<()> {
     if id.starts_with("s_") {
-        let span = q
-            .span_by_id(id)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let span = q.span_by_id(id).map_err(|e| anyhow::anyhow!("{}", e))?;
         let edges = q.edges_for_span(id).map_err(|e| anyhow::anyhow!("{}", e))?;
 
         let edges_json: Vec<serde_json::Value> = edges

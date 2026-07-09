@@ -185,7 +185,10 @@ mod tests {
 
         let s1 = rank_edge(&make_input(e1, 0, 0));
         let s2 = rank_edge(&make_input(e2, 0, 0));
-        assert!((s1 - s2).abs() < f64::EPSILON, "different rel types with same signals should rank equally");
+        assert!(
+            (s1 - s2).abs() < f64::EPSILON,
+            "different rel types with same signals should rank equally"
+        );
     }
 
     #[test]
@@ -218,7 +221,10 @@ mod tests {
 
         let s1 = rank_edge(&make_input(e1, 0, 0));
         let s2 = rank_edge(&make_input(e2, 0, 0));
-        assert!((s1 - s2).abs() < f64::EPSILON, "action field should not affect ranking");
+        assert!(
+            (s1 - s2).abs() < f64::EPSILON,
+            "action field should not affect ranking"
+        );
     }
 
     #[test]

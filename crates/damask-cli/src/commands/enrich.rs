@@ -44,7 +44,9 @@ pub fn run(format: Format) -> Result<()> {
     let conn = update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let q = IndexQuery::new(&conn);
-    let config = project.read_config().map_err(|e| anyhow::anyhow!("{}", e))?;
+    let config = project
+        .read_config()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let stdin = std::io::stdin();
     let mut saw_input = false;
@@ -136,7 +138,10 @@ fn parse_result(v: &serde_json::Value) -> Option<ParsedResult> {
         .or_else(|| v.pointer("/match/span"))
         .and_then(|s| {
             let start = s.get("line_start")?.as_u64()? as u32;
-            let end = s.get("line_end").and_then(|e| e.as_u64()).unwrap_or(start as u64) as u32;
+            let end = s
+                .get("line_end")
+                .and_then(|e| e.as_u64())
+                .unwrap_or(start as u64) as u32;
             Some((start, end))
         });
     let range = span.or_else(|| {

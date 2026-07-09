@@ -72,8 +72,10 @@ pub fn run(span_id: &str) -> Result<()> {
                 if file_path.exists() {
                     if let Ok(file) = fs::File::open(&file_path) {
                         let reader = BufReader::new(file);
-                        let file_lines: Vec<String> =
-                            reader.lines().collect::<std::io::Result<Vec<_>>>().unwrap_or_default();
+                        let file_lines: Vec<String> = reader
+                            .lines()
+                            .collect::<std::io::Result<Vec<_>>>()
+                            .unwrap_or_default();
 
                         let label = if resolution == Resolution::Relocated {
                             "Content (relocated)"

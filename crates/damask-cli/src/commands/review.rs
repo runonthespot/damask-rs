@@ -115,10 +115,8 @@ pub fn run(format: Format, markdown: bool) -> Result<()> {
             println!();
 
             // Group by span
-            let mut by_span: std::collections::BTreeMap<
-                String,
-                Vec<&damask_store::RankedEdge>,
-            > = std::collections::BTreeMap::new();
+            let mut by_span: std::collections::BTreeMap<String, Vec<&damask_store::RankedEdge>> =
+                std::collections::BTreeMap::new();
             let mut orphans = Vec::new();
 
             for re in &ranked {
@@ -214,11 +212,7 @@ pub fn run(format: Format, markdown: bool) -> Result<()> {
 /// PR-comment-ready markdown: new annotations grouped by file, with
 /// confidence, agent provenance, and actions. Designed for CI:
 /// `damask review --markdown | gh pr comment <n> --body-file -`
-fn print_markdown(
-    q: &IndexQuery,
-    ranked: &[damask_store::RankedEdge],
-    since: Option<&str>,
-) {
+fn print_markdown(q: &IndexQuery, ranked: &[damask_store::RankedEdge], since: Option<&str>) {
     let since_label = since
         .and_then(|s| s.split('T').next().map(String::from))
         .unwrap_or_else(|| "repo start".to_string());

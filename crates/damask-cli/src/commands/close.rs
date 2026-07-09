@@ -9,11 +9,21 @@ use crate::error::Result;
 /// Map a reason template name to a JSON payload.
 fn reason_to_payload(reason: &str) -> serde_json::Value {
     match reason {
-        "resolved" => serde_json::json!({"summary": "Closed — resolved, the underlying issue has been addressed"}),
-        "outdated" => serde_json::json!({"summary": "Closed — outdated, the context has changed significantly"}),
-        "incorrect" => serde_json::json!({"summary": "Closed — incorrect, investigation determined this is not accurate"}),
-        "duplicate" => serde_json::json!({"summary": "Closed — duplicate, this finding is covered by another edge"}),
-        "accepted" => serde_json::json!({"summary": "Closed — accepted, acknowledged but not changing"}),
+        "resolved" => {
+            serde_json::json!({"summary": "Closed — resolved, the underlying issue has been addressed"})
+        }
+        "outdated" => {
+            serde_json::json!({"summary": "Closed — outdated, the context has changed significantly"})
+        }
+        "incorrect" => {
+            serde_json::json!({"summary": "Closed — incorrect, investigation determined this is not accurate"})
+        }
+        "duplicate" => {
+            serde_json::json!({"summary": "Closed — duplicate, this finding is covered by another edge"})
+        }
+        "accepted" => {
+            serde_json::json!({"summary": "Closed — accepted, acknowledged but not changing"})
+        }
         _ => serde_json::json!({"summary": format!("Closed: {reason}")}),
     }
 }

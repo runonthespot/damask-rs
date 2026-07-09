@@ -9,12 +9,22 @@ use crate::error::Result;
 /// Map a reason template name to a JSON payload.
 fn reason_to_payload(reason: &str) -> serde_json::Value {
     match reason {
-        "resolved" => serde_json::json!({"summary": "Resolved — the underlying issue has been addressed"}),
+        "resolved" => {
+            serde_json::json!({"summary": "Resolved — the underlying issue has been addressed"})
+        }
         "fixed" => serde_json::json!({"summary": "Fixed — the underlying issue has been fixed"}),
-        "stale" => serde_json::json!({"summary": "Stale — the code this references has since changed"}),
-        "outdated" => serde_json::json!({"summary": "Outdated — the context this edge references has changed significantly"}),
-        "incorrect" => serde_json::json!({"summary": "Incorrect — investigation determined this is not accurate"}),
-        "duplicate" => serde_json::json!({"summary": "Duplicate — this finding is covered by another edge"}),
+        "stale" => {
+            serde_json::json!({"summary": "Stale — the code this references has since changed"})
+        }
+        "outdated" => {
+            serde_json::json!({"summary": "Outdated — the context this edge references has changed significantly"})
+        }
+        "incorrect" => {
+            serde_json::json!({"summary": "Incorrect — investigation determined this is not accurate"})
+        }
+        "duplicate" => {
+            serde_json::json!({"summary": "Duplicate — this finding is covered by another edge"})
+        }
         _ => serde_json::json!({"summary": format!("Disputed: {reason}")}),
     }
 }
@@ -93,8 +103,7 @@ pub fn run(
 
         let mut facts = Vec::new();
         for eid in &edge_ids {
-            let target = DamaskId::parse(eid)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            let target = DamaskId::parse(eid).map_err(|e| anyhow::anyhow!("{}", e))?;
             let edge = Edge {
                 id: EdgeId::new(),
                 from: Some(target),
@@ -122,7 +131,8 @@ pub fn run(
         }
     } else {
         // Single edge dispute
-        let edge_id = edge_id.ok_or_else(|| anyhow::anyhow!("edge_id is required (or use --batch)"))?;
+        let edge_id =
+            edge_id.ok_or_else(|| anyhow::anyhow!("edge_id is required (or use --batch)"))?;
 
         let edge_id = &super::helpers::resolve_id(&project, edge_id)?;
         if !edge_id.starts_with("e_") {

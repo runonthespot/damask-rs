@@ -175,7 +175,10 @@ fn manifest_detail(path: &Path) -> Option<String> {
     let mut desc = None;
     for line in content.lines().take(100) {
         let l = line.trim();
-        if let Some(v) = l.strip_prefix("name = \"").and_then(|r| r.strip_suffix('"')) {
+        if let Some(v) = l
+            .strip_prefix("name = \"")
+            .and_then(|r| r.strip_suffix('"'))
+        {
             name.get_or_insert(v.to_string());
         }
         if let Some(v) = l
@@ -330,7 +333,7 @@ fn seed_cochange(
     let mut pair_counts: HashMap<(String, String), usize> = HashMap::new();
     let mut commits_scanned = 0usize;
     let mut current: Vec<String> = Vec::new();
-    let mut flush = |files: &mut Vec<String>, counts: &mut HashMap<(String, String), usize>| {
+    let flush = |files: &mut Vec<String>, counts: &mut HashMap<(String, String), usize>| {
         if files.len() >= 2 && files.len() <= COCHANGE_COMMIT_CAP {
             files.sort();
             for i in 0..files.len() {

@@ -87,7 +87,10 @@ fn render_markdown(data: &OrientData) -> String {
             md,
             "    damask record <file> <start> <end> <rel> -m \"what you found\" -c 0.8\n"
         );
-        let _ = writeln!(md, "Run `damask help cold-start` for the first-pass playbook.");
+        let _ = writeln!(
+            md,
+            "Run `damask help cold-start` for the first-pass playbook."
+        );
         return md;
     }
 

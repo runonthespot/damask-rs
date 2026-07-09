@@ -14,7 +14,18 @@ use crate::output::Format;
 /// Maximum edges displayed by default.
 const DEFAULT_LIMIT: usize = 12;
 
-pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter: Option<&str>, tag_filter: Option<&str>, uncontested: bool, show_closed: bool, offset: usize) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    location: &str,
+    format: Format,
+    all: bool,
+    no_rank: bool,
+    rel_filter: Option<&str>,
+    tag_filter: Option<&str>,
+    uncontested: bool,
+    show_closed: bool,
+    offset: usize,
+) -> Result<()> {
     let (file, line) = parse_location(location)?;
 
     let cwd = env::current_dir().context("failed to get current directory")?;
@@ -49,7 +60,9 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
         // 1) file:line with no spans at that line, but spans elsewhere in
         //    the file → show the file's annotated regions.
         if line.is_some() {
-            let file_spans = q.spans_for_file(&file).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let file_spans = q
+                .spans_for_file(&file)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
             if !file_spans.is_empty() {
                 match format {
                     Format::Human => {
@@ -62,7 +75,8 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
                                 (Some(a), Some(b)) => format!(":{}-{}", a, b),
                                 _ => String::new(),
                             };
-                            let glyph = freshness_glyph(s.resolution.as_deref(), s.recency.as_deref());
+                            let glyph =
+                                freshness_glyph(s.resolution.as_deref(), s.recency.as_deref());
                             println!("  {}{} ({}) {}", s.path, lines, s.id, glyph);
                         }
                         println!("  Next: damask at {file}");
@@ -140,23 +154,24 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
         spans.iter().map(|s| s.id.as_str()).collect();
 
     // Cache span lookups to avoid redundant DB queries
-    let mut span_cache: std::collections::HashMap<String, Option<damask_store::index::query::SpanRow>> =
-        std::collections::HashMap::new();
+    let mut span_cache: std::collections::HashMap<
+        String,
+        Option<damask_store::index::query::SpanRow>,
+    > = std::collections::HashMap::new();
 
     // Helper: look up a span ID, using cache
-    let mut lookup_span =
-        |id: &str| -> Option<damask_store::index::query::SpanRow> {
-            span_cache
-                .entry(id.to_string())
-                .or_insert_with(|| {
-                    if id.starts_with("s_") {
-                        q.span_by_id(id).ok().flatten()
-                    } else {
-                        None
-                    }
-                })
-                .clone()
-        };
+    let mut lookup_span = |id: &str| -> Option<damask_store::index::query::SpanRow> {
+        span_cache
+            .entry(id.to_string())
+            .or_insert_with(|| {
+                if id.starts_with("s_") {
+                    q.span_by_id(id).ok().flatten()
+                } else {
+                    None
+                }
+            })
+            .clone()
+    };
 
     for span in &spans {
         let edges = if show_closed {
@@ -206,14 +221,14 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
                 let to_is_queried = to_id.is_some_and(|id| queried_span_ids.contains(id));
 
                 if from_is_queried {
-                    from_id.and_then(|id| lookup_span(id))
+                    from_id.and_then(&mut lookup_span)
                 } else if to_is_queried {
-                    to_id.and_then(|id| lookup_span(id))
+                    to_id.and_then(&mut lookup_span)
                 } else {
                     // Neither matches queried spans — try from_id first, then to_id
                     from_id
-                        .and_then(|id| lookup_span(id))
-                        .or_else(|| to_id.and_then(|id| lookup_span(id)))
+                        .and_then(&mut lookup_span)
+                        .or_else(|| to_id.and_then(&mut lookup_span))
                 }
             };
 
@@ -285,7 +300,7 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
                     serde_json::from_str(&input.edge.payload).unwrap_or(serde_json::json!({}));
                 let env = PayloadEnvelope::new(&payload);
                 let tags = env.tags().unwrap_or_default();
-                if !tags.iter().any(|t| *t == tag) {
+                if !tags.contains(&tag) {
                     return false;
                 }
             }
@@ -297,7 +312,11 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
     }
 
     let graph_stats = q.graph_stats().map_err(|e| anyhow::anyhow!("{}", e))?;
-    let closed_hidden = if !show_closed { graph_stats.closed_edges } else { 0 };
+    let closed_hidden = if !show_closed {
+        graph_stats.closed_edges
+    } else {
+        0
+    };
 
     let limit = if all { usize::MAX } else { DEFAULT_LIMIT };
 
@@ -325,10 +344,8 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
     let count = ranked.len();
 
     // Precompute target spans for freshness glyphs in human output
-    let mut target_spans: std::collections::HashMap<
-        String,
-        damask_store::index::query::SpanRow,
-    > = std::collections::HashMap::new();
+    let mut target_spans: std::collections::HashMap<String, damask_store::index::query::SpanRow> =
+        std::collections::HashMap::new();
     for re in &ranked {
         if let Some(target_id) = edge_target_span_id(&re.edge) {
             if !target_spans.contains_key(target_id) {
@@ -340,8 +357,26 @@ pub fn run(location: &str, format: Format, all: bool, no_rank: bool, rel_filter:
     }
 
     match format {
-        Format::Human => print_human(&spans, &ranked, location, &target_spans, offset, count, total_before_page, closed_hidden),
-        Format::Json => print_json(&spans, &ranked, offset, limit, count, total_before_page, closed_hidden, &graph_stats),
+        Format::Human => print_human(
+            &spans,
+            &ranked,
+            location,
+            &target_spans,
+            offset,
+            count,
+            total_before_page,
+            closed_hidden,
+        ),
+        Format::Json => print_json(
+            &spans,
+            &ranked,
+            offset,
+            limit,
+            count,
+            total_before_page,
+            closed_hidden,
+            &graph_stats,
+        ),
     }
 
     Ok(())
@@ -358,6 +393,7 @@ fn parse_location(s: &str) -> Result<(String, Option<u32>)> {
     Ok((s.to_string(), None))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_human(
     spans: &[damask_store::index::query::SpanRow],
     ranked: &[RankedEdge],
@@ -388,7 +424,10 @@ fn print_human(
             format!(" {}", glyph)
         };
 
-        println!("\n{}{} ({}){}{}", span.path, lines, span.id, glyph_suffix, snippet);
+        println!(
+            "\n{}{} ({}){}{}",
+            span.path, lines, span.id, glyph_suffix, snippet
+        );
         // A drifted anchor carries its own repair instructions: confirm if
         // the annotation still holds, dispute the edge if it doesn't.
         if !glyph.is_empty() && glyph != glyphs::EXACT_UNCHANGED {
@@ -504,7 +543,10 @@ fn print_human(
         String::new()
     };
     if count < total {
-        println!("Showing {}-{} of {} edges{}", start, end, total, closed_hint);
+        println!(
+            "Showing {}-{} of {} edges{}",
+            start, end, total, closed_hint
+        );
         let next_offset = offset + count;
         println!("  Next: damask at {} --offset {next_offset}", location);
     } else {
@@ -535,11 +577,7 @@ pub(crate) fn edge_target_span_id(edge: &damask_store::index::query::EdgeRow) ->
     edge.to_id
         .as_deref()
         .filter(|id| id.starts_with("s_"))
-        .or_else(|| {
-            edge.from_id
-                .as_deref()
-                .filter(|id| id.starts_with("s_"))
-        })
+        .or_else(|| edge.from_id.as_deref().filter(|id| id.starts_with("s_")))
 }
 
 pub(crate) fn freshness_glyph(resolution: Option<&str>, recency: Option<&str>) -> &'static str {
@@ -553,7 +591,17 @@ pub(crate) fn freshness_glyph(resolution: Option<&str>, recency: Option<&str>) -
     }
 }
 
-fn print_json(spans: &[damask_store::index::query::SpanRow], ranked: &[RankedEdge], offset: usize, limit: usize, count: usize, total: usize, closed_hidden: u64, graph_stats: &damask_store::GraphStats) {
+#[allow(clippy::too_many_arguments)]
+fn print_json(
+    spans: &[damask_store::index::query::SpanRow],
+    ranked: &[RankedEdge],
+    offset: usize,
+    limit: usize,
+    count: usize,
+    total: usize,
+    closed_hidden: u64,
+    graph_stats: &damask_store::GraphStats,
+) {
     let spans_json: Vec<serde_json::Value> = spans
         .iter()
         .map(|s| {

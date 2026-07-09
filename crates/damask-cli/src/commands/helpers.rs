@@ -1,5 +1,7 @@
 use anyhow::{bail, Context};
-use damask_core::{DamaskId, Edge, EdgeId, Freshness, PayloadEnvelope, Recency, Resolution, Span, SpanId};
+use damask_core::{
+    DamaskId, Edge, EdgeId, Freshness, PayloadEnvelope, Recency, Resolution, Span, SpanId,
+};
 use damask_store::index::query::{EdgeRow, SpanRow};
 use damask_store::{update_index_with_mode, DamaskProject, IndexMode, IndexQuery};
 use std::path::Path;
@@ -24,7 +26,10 @@ pub fn print_signal_context(project: &DamaskProject, edge_id: &str, verb: &str) 
     };
     let payload: serde_json::Value = serde_json::from_str(&claim.payload).unwrap_or_default();
     let env = PayloadEnvelope::new(&payload);
-    let conf = env.confidence().map(|c| format!(" ({c:.2})")).unwrap_or_default();
+    let conf = env
+        .confidence()
+        .map(|c| format!(" ({c:.2})"))
+        .unwrap_or_default();
     let summary = damask_core::truncate_str(env.summary().unwrap_or(""), 90);
     let who = claim.agent.as_deref().unwrap_or("unknown");
     let date = claim.ts.split('T').next().unwrap_or(&claim.ts);
@@ -32,13 +37,19 @@ pub fn print_signal_context(project: &DamaskProject, edge_id: &str, verb: &str) 
     let disputes = q.dispute_count(edge_id).unwrap_or(0);
 
     println!("  context — you are {verb} this edge:");
-    println!("    claim: [{}]{} {}  (by {}, {})", claim.rel, conf, summary, who, date);
+    println!(
+        "    claim: [{}]{} {}  (by {}, {})",
+        claim.rel, conf, summary, who, date
+    );
 
     let signals = q.edges_targeting(edge_id).unwrap_or_default();
     let mut lines: Vec<(String, String)> = Vec::new();
     for s in &signals {
         let sp: serde_json::Value = serde_json::from_str(&s.payload).unwrap_or_default();
-        let reason = PayloadEnvelope::new(&sp).summary().unwrap_or("").to_string();
+        let reason = PayloadEnvelope::new(&sp)
+            .summary()
+            .unwrap_or("")
+            .to_string();
         let sa = s.agent.as_deref().unwrap_or("unknown").to_string();
         let sd = s.ts.split('T').next().unwrap_or(&s.ts).to_string();
         let mark = match s.rel.as_str() {
@@ -100,8 +111,7 @@ pub fn payload_signal_density(snippet: Option<&str>, payload: &str) -> f64 {
     let Some(snippet) = snippet else {
         return 1.0;
     };
-    let payload: serde_json::Value =
-        serde_json::from_str(payload).unwrap_or(serde_json::json!({}));
+    let payload: serde_json::Value = serde_json::from_str(payload).unwrap_or(serde_json::json!({}));
     let env = damask_core::PayloadEnvelope::new(&payload);
     match env.summary() {
         Some(summary) => {

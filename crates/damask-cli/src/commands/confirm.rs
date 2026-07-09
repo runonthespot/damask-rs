@@ -143,7 +143,11 @@ pub fn run(id: &str, format: Format) -> Result<()> {
                 );
             }
             if let Some(eid) = &endorsed {
-                println!("Endorsed {} ({})", edge_to_endorse.as_ref().unwrap().id, eid);
+                println!(
+                    "Endorsed {} ({})",
+                    edge_to_endorse.as_ref().unwrap().id,
+                    eid
+                );
             }
         }
         Format::Json => {

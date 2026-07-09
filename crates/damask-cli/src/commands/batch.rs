@@ -45,8 +45,8 @@ pub fn run(
 ) -> Result<()> {
     let input = read_input(stdin, file)?;
 
-    let items: Vec<BatchItem> =
-        serde_json::from_str(&input).context("batch input is not a valid JSON array of span/edge instructions")?;
+    let items: Vec<BatchItem> = serde_json::from_str(&input)
+        .context("batch input is not a valid JSON array of span/edge instructions")?;
 
     if items.is_empty() {
         bail!("batch is empty — nothing to create");
@@ -64,7 +64,11 @@ pub fn run(
         match item {
             BatchItem::SpanItem { span } => {
                 if span.start > span.end {
-                    bail!("batch[{i}]: start line ({}) must be <= end line ({})", span.start, span.end);
+                    bail!(
+                        "batch[{i}]: start line ({}) must be <= end line ({})",
+                        span.start,
+                        span.end
+                    );
                 }
                 if span.start == 0 {
                     bail!("batch[{i}]: lines are 1-indexed; start must be >= 1");
@@ -112,7 +116,8 @@ pub fn run(
                 config
                     .validate_ns_payload(&ns, &inst.payload)
                     .map_err(|e| anyhow::anyhow!("item {i}: {e}"))?;
-                let edge = helpers::build_edge(from_id, to_id, &inst.rel, inst.payload.clone(), &ns);
+                let edge =
+                    helpers::build_edge(from_id, to_id, &inst.rel, inst.payload.clone(), &ns);
                 let id = DamaskId::Edge(edge.id.clone());
                 facts.push(Fact::Edge(edge));
                 created_ids.push(id);
@@ -145,8 +150,7 @@ pub fn run(
 
 fn read_input(stdin: bool, file: Option<&str>) -> anyhow::Result<String> {
     if let Some(path) = file {
-        return std::fs::read_to_string(path)
-            .context(format!("failed to read batch file: {path}"));
+        return std::fs::read_to_string(path).context(format!("failed to read batch file: {path}"));
     }
     if stdin {
         let mut buf = String::new();
@@ -163,9 +167,9 @@ fn validate_ref(s: &str, current_index: usize, field: &str) -> anyhow::Result<()
         return Ok(());
     }
     if let Some(idx_str) = s.strip_prefix('$') {
-        let idx: usize = idx_str
-            .parse()
-            .context(format!("batch[{current_index}].{field}: invalid back-reference: {s}"))?;
+        let idx: usize = idx_str.parse().context(format!(
+            "batch[{current_index}].{field}: invalid back-reference: {s}"
+        ))?;
         if idx >= current_index {
             bail!(
                 "batch[{current_index}].{field}: back-reference ${idx} must refer to an earlier item (0..{current_index})"

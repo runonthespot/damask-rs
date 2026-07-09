@@ -593,6 +593,8 @@ fn parse_confidence(s: &str) -> Result<f64, String> {
         } else {
             String::new()
         };
-        Err(format!("confidence must be between 0.0 and 1.0 (got {v}{hint})"))
+        Err(format!(
+            "confidence must be between 0.0 and 1.0 (got {v}{hint})"
+        ))
     }
 }

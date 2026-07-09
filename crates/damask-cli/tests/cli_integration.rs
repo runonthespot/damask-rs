@@ -1,3 +1,4 @@
+#![allow(deprecated)] // assert_cmd::Command::cargo_bin — pinned version
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
@@ -220,9 +221,13 @@ fn init_default_namespace_makes_first_write_succeed() {
     // The write landed in the config default_ns.
     let config = fs::read_to_string(dir.path().join(".damask/config.json")).unwrap();
     let doc: serde_json::Value = serde_json::from_str(&config).unwrap();
-    let ns = doc["default_ns"].as_str().expect("init must set default_ns");
+    let ns = doc["default_ns"]
+        .as_str()
+        .expect("init must set default_ns");
     assert!(
-        dir.path().join(format!(".damask/edges/{ns}.jsonl")).is_file(),
+        dir.path()
+            .join(format!(".damask/edges/{ns}.jsonl"))
+            .is_file(),
         "span must land in the default namespace"
     );
 }
@@ -417,9 +422,21 @@ fn record_flag_form_succeeds_and_sloppy_forms_teach() {
     // The guessable form: flags, no JSON.
     let output = damask()
         .args([
-            "--format", "json", "record", "f.rs", "1", "3", "risk",
-            "-m", "token never expires", "-c", "0.9",
-            "--action", "add expiry", "--tag", "security",
+            "--format",
+            "json",
+            "record",
+            "f.rs",
+            "1",
+            "3",
+            "risk",
+            "-m",
+            "token never expires",
+            "-c",
+            "0.9",
+            "--action",
+            "add expiry",
+            "--tag",
+            "security",
         ])
         .current_dir(dir.path())
         .output()
@@ -441,7 +458,14 @@ fn record_flag_form_succeeds_and_sloppy_forms_teach() {
 
     // JSON confidence out of range: validated at write time.
     damask()
-        .args(["record", "f.rs", "1", "3", "risk", r#"{"summary":"x","confidence":9}"#])
+        .args([
+            "record",
+            "f.rs",
+            "1",
+            "3",
+            "risk",
+            r#"{"summary":"x","confidence":9}"#,
+        ])
         .current_dir(dir.path())
         .assert()
         .failure()
@@ -449,7 +473,14 @@ fn record_flag_form_succeeds_and_sloppy_forms_teach() {
 
     // String confidence: previously vanished from numeric predicates.
     damask()
-        .args(["record", "f.rs", "1", "3", "risk", r#"{"summary":"x","confidence":"0.9"}"#])
+        .args([
+            "record",
+            "f.rs",
+            "1",
+            "3",
+            "risk",
+            r#"{"summary":"x","confidence":"0.9"}"#,
+        ])
         .current_dir(dir.path())
         .assert()
         .failure()
@@ -498,9 +529,11 @@ fn batch_validates_payloads() {
         .stderr(predicate::str::contains("did you mean 0.9"));
 
     // Nothing should have been written (atomic batch).
-    let jsonl = fs::read_to_string(dir.path().join(".damask/edges/test.jsonl"))
-        .unwrap_or_default();
-    assert!(!jsonl.contains("confidence"), "failed batch must write nothing");
+    let jsonl = fs::read_to_string(dir.path().join(".damask/edges/test.jsonl")).unwrap_or_default();
+    assert!(
+        !jsonl.contains("confidence"),
+        "failed batch must write nothing"
+    );
 }
 
 #[test]
@@ -531,7 +564,11 @@ fn where_output_is_ranked_and_located() {
 
     // A second edge anchored to a file that then disappears → resolution
     // becomes missing → must sink below the live finding under ranking.
-    fs::write(dir.path().join("doomed.rs"), "fn doomed() {}\nfn gone() {}\n").unwrap();
+    fs::write(
+        dir.path().join("doomed.rs"),
+        "fn doomed() {}\nfn gone() {}\n",
+    )
+    .unwrap();
     record("doomed.rs", "doomed finding");
     fs::remove_file(dir.path().join("doomed.rs")).unwrap();
 
@@ -568,7 +605,10 @@ fn where_output_is_ranked_and_located() {
     let json: serde_json::Value =
         serde_json::from_str(&String::from_utf8(output.stdout).unwrap()).unwrap();
     let edges = json["edges"].as_array().unwrap();
-    assert_eq!(edges[0]["span"]["path"], "doomed.rs", "newest first under --sort ts");
+    assert_eq!(
+        edges[0]["span"]["path"], "doomed.rs",
+        "newest first under --sort ts"
+    );
 }
 
 #[test]
@@ -1526,7 +1566,10 @@ fn init_claude_idempotent_no_duplicate() {
         .iter()
         .filter(|v| v.as_str() == Some("Bash(damask *)"))
         .count();
-    assert_eq!(damask_count, 1, "should have exactly one damask permission entry");
+    assert_eq!(
+        damask_count, 1,
+        "should have exactly one damask permission entry"
+    );
 }
 
 #[test]
@@ -1564,7 +1607,10 @@ fn init_claude_installs_hooks() {
     );
     let stop = hook_command(&doc, "Stop");
     assert!(stop.contains("damask harvest"));
-    assert!(stop.contains("command -v damask"), "Stop hook must be guarded");
+    assert!(
+        stop.contains("command -v damask"),
+        "Stop hook must be guarded"
+    );
     let post_tool_entries = doc["hooks"]["PostToolUse"].as_array().unwrap();
     let post_tool = hook_command(&doc, "PostToolUse");
     assert!(post_tool.contains("damask peek"));
@@ -1591,7 +1637,10 @@ fn init_claude_installs_hooks() {
     assert_eq!(doc["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
     assert_eq!(doc["hooks"]["Stop"].as_array().unwrap().len(), 1);
     assert_eq!(doc["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
-    assert_eq!(doc["hooks"]["UserPromptSubmit"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        doc["hooks"]["UserPromptSubmit"].as_array().unwrap().len(),
+        1
+    );
 }
 
 #[test]
@@ -1645,13 +1694,21 @@ fn bootstrap_seeds_and_is_idempotent() {
         "[package]\nname = \"acme\"\ndescription = \"Test API\"\n",
     )
     .unwrap();
-    fs::write(dir.path().join("a.rs"), "// TODO: fix this later\nfn x() {}\n").unwrap();
+    fs::write(
+        dir.path().join("a.rs"),
+        "// TODO: fix this later\nfn x() {}\n",
+    )
+    .unwrap();
     fs::write(dir.path().join("b.rs"), "fn y() {}\n").unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-qm", "c1"]);
     // Co-change history: a.rs + b.rs together three more times.
     for i in 0..3 {
-        fs::write(dir.path().join("a.rs"), format!("// TODO: fix this later\nfn x() {{}} // {i}\n")).unwrap();
+        fs::write(
+            dir.path().join("a.rs"),
+            format!("// TODO: fix this later\nfn x() {{}} // {i}\n"),
+        )
+        .unwrap();
         fs::write(dir.path().join("b.rs"), format!("fn y() {{}} // {i}\n")).unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-qm", "co"]);
@@ -1668,11 +1725,26 @@ fn bootstrap_seeds_and_is_idempotent() {
         .stdout(predicate::str::contains("co-change pairs"));
 
     let jsonl = fs::read_to_string(dir.path().join(".damask/edges/bootstrap.jsonl")).unwrap();
-    assert!(jsonl.contains("\"agent\":\"damask-bootstrap\""), "bootstrap must stamp its agent");
-    assert!(jsonl.contains("acme: Test API"), "manifest name/description extracted");
-    assert!(jsonl.contains("TODO: fix this later"), "TODO comment becomes gotcha");
-    assert!(jsonl.contains("\"status\":\"hypothesis\""), "seeds are hypotheses");
-    assert!(jsonl.contains("changed together in"), "co-change pair recorded");
+    assert!(
+        jsonl.contains("\"agent\":\"damask-bootstrap\""),
+        "bootstrap must stamp its agent"
+    );
+    assert!(
+        jsonl.contains("acme: Test API"),
+        "manifest name/description extracted"
+    );
+    assert!(
+        jsonl.contains("TODO: fix this later"),
+        "TODO comment becomes gotcha"
+    );
+    assert!(
+        jsonl.contains("\"status\":\"hypothesis\""),
+        "seeds are hypotheses"
+    );
+    assert!(
+        jsonl.contains("changed together in"),
+        "co-change pair recorded"
+    );
 
     // Idempotent without --force.
     damask()
@@ -1691,7 +1763,11 @@ fn bootstrap_seeds_and_is_idempotent() {
         .stdout(predicate::str::contains("Bootstrapped"));
     let regenerated = fs::read_to_string(dir.path().join(".damask/edges/bootstrap.jsonl")).unwrap();
     let count = |s: &str| s.matches("\"rel\":\"describes\"").count();
-    assert_eq!(count(&jsonl), count(&regenerated), "--force must not duplicate facts");
+    assert_eq!(
+        count(&jsonl),
+        count(&regenerated),
+        "--force must not duplicate facts"
+    );
 
     // Session-1 payoff: peek on the TODO file injects the gotcha.
     damask()
@@ -1708,16 +1784,32 @@ fn queries_never_dead_end() {
     init_project(&dir);
     set_ns(&dir, "test");
     fs::create_dir_all(dir.path().join("src")).unwrap();
-    fs::write(dir.path().join("src/a.rs"), "fn a() {}\nfn b() {}\nfn c() {}\n").unwrap();
+    fs::write(
+        dir.path().join("src/a.rs"),
+        "fn a() {}\nfn b() {}\nfn c() {}\n",
+    )
+    .unwrap();
     fs::write(dir.path().join("src/b.rs"), "fn d() {}\n").unwrap();
 
     damask()
-        .args(["record", "src/a.rs", "1", "1", "risk", "-m", "read-modify-write race", "-c", "0.8"])
+        .args([
+            "record",
+            "src/a.rs",
+            "1",
+            "1",
+            "risk",
+            "-m",
+            "read-modify-write race",
+            "-c",
+            "0.8",
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
     damask()
-        .args(["record", "src/b.rs", "1", "1", "gotcha", "-m", "quirk", "-c", "0.6"])
+        .args([
+            "record", "src/b.rs", "1", "1", "gotcha", "-m", "quirk", "-c", "0.6",
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
@@ -1738,7 +1830,9 @@ fn queries_never_dead_end() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("annotated region(s) elsewhere in this file"))
+        .stdout(predicate::str::contains(
+            "annotated region(s) elsewhere in this file",
+        ))
         .stdout(predicate::str::contains("Next: damask at src/a.rs"));
 
     // FTS syntax characters in payload text are searchable, not a crash.
@@ -1788,13 +1882,29 @@ fn ruled_out_status_sinks_marks_and_triages() {
     fs::write(dir.path().join("f.rs"), "fn a() {}\nfn b() {}\n").unwrap();
 
     damask()
-        .args(["record", "f.rs", "1", "1", "risk", "-m", "live risk", "-c", "0.6"])
+        .args([
+            "record",
+            "f.rs",
+            "1",
+            "1",
+            "risk",
+            "-m",
+            "live risk",
+            "-c",
+            "0.6",
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
     damask()
-        .args(["record", "f.rs", "2", "2", "risk",
-               r#"{"summary":"dismissed risk","confidence":0.95,"status":"ruled_out"}"#])
+        .args([
+            "record",
+            "f.rs",
+            "2",
+            "2",
+            "risk",
+            r#"{"summary":"dismissed risk","confidence":0.95,"status":"ruled_out"}"#,
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
@@ -1836,7 +1946,10 @@ fn ruled_out_status_sinks_marks_and_triages() {
         .output()
         .unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(!stdout.contains("dismissed risk"), "closed ruled-out must vanish");
+    assert!(
+        !stdout.contains("dismissed risk"),
+        "closed ruled-out must vanish"
+    );
 }
 
 #[test]
@@ -1860,13 +1973,19 @@ fn sweep_reports_and_reanchors_drifted_spans() {
     set_ns(&dir, "test");
 
     damask()
-        .args(["record", "f.rs", "1", "2", "risk", "-m", "holds", "-c", "0.8"])
+        .args([
+            "record", "f.rs", "1", "2", "risk", "-m", "holds", "-c", "0.8",
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
 
     // Drift the anchor: prepend a line and commit.
-    fs::write(dir.path().join("f.rs"), "// hdr\nfn keep() {}\nfn also() {}\n").unwrap();
+    fs::write(
+        dir.path().join("f.rs"),
+        "// hdr\nfn keep() {}\nfn also() {}\n",
+    )
+    .unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-qm", "drift"]);
 
@@ -1909,14 +2028,36 @@ fn severity_is_first_class_and_reasons_are_free_text() {
     fs::write(dir.path().join("f.rs"), "a\nb\nc\n").unwrap();
 
     damask()
-        .args(["record", "f.rs", "1", "1", "risk", "-m", "certain but harmless",
-               "-c", "0.95", "--severity", "low"])
+        .args([
+            "record",
+            "f.rs",
+            "1",
+            "1",
+            "risk",
+            "-m",
+            "certain but harmless",
+            "-c",
+            "0.95",
+            "--severity",
+            "low",
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
     damask()
-        .args(["record", "f.rs", "2", "2", "risk", "-m", "probable and terrible",
-               "-c", "0.7", "--severity", "critical"])
+        .args([
+            "record",
+            "f.rs",
+            "2",
+            "2",
+            "risk",
+            "-m",
+            "probable and terrible",
+            "-c",
+            "0.7",
+            "--severity",
+            "critical",
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
@@ -1942,7 +2083,17 @@ fn severity_is_first_class_and_reasons_are_free_text() {
 
     // Invalid severity flag teaches.
     damask()
-        .args(["record", "f.rs", "3", "3", "risk", "-m", "x", "--severity", "huge"])
+        .args([
+            "record",
+            "f.rs",
+            "3",
+            "3",
+            "risk",
+            "-m",
+            "x",
+            "--severity",
+            "huge",
+        ])
         .current_dir(dir.path())
         .assert()
         .failure();
@@ -1965,7 +2116,11 @@ fn severity_is_first_class_and_reasons_are_free_text() {
 fn namespace_schemas_validate_rank_and_filter() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);
-    fs::write(dir.path().join("contract.md"), "clause 1\nclause 2\nclause 3\n").unwrap();
+    fs::write(
+        dir.path().join("contract.md"),
+        "clause 1\nclause 2\nclause 3\n",
+    )
+    .unwrap();
 
     // Assert a legal-domain schema on the ns.
     let cfg_path = dir.path().join(".damask/config.json");
@@ -1979,8 +2134,21 @@ fn namespace_schemas_validate_rank_and_filter() {
 
     let rec = |line: &str, conf: &str, field: &str| {
         damask()
-            .args(["--ns", "legal", "record", "contract.md", line, line, "risk",
-                   "-m", "finding", "-c", conf, "--field", field])
+            .args([
+                "--ns",
+                "legal",
+                "record",
+                "contract.md",
+                line,
+                line,
+                "risk",
+                "-m",
+                "finding",
+                "-c",
+                conf,
+                "--field",
+                field,
+            ])
             .current_dir(dir.path())
             .assert()
     };
@@ -2010,8 +2178,10 @@ fn namespace_schemas_validate_rank_and_filter() {
         .unwrap();
     let json: serde_json::Value =
         serde_json::from_str(&String::from_utf8(out.stdout).unwrap()).unwrap();
-    assert_eq!(json["edges"][0]["payload"]["jurisdiction"], "EU",
-        "declared rank weight must outrank higher confidence");
+    assert_eq!(
+        json["edges"][0]["payload"]["jurisdiction"], "EU",
+        "declared rank weight must outrank higher confidence"
+    );
     damask()
         .args(["--ns", "legal", "where", "jurisdiction=EU"])
         .current_dir(dir.path())
@@ -2028,7 +2198,17 @@ fn log_is_bounded_by_default() {
     fs::write(dir.path().join("f.rs"), "fn x() {}\n").unwrap();
     for i in 0..30 {
         damask()
-            .args(["record", "f.rs", "1", "1", "risk", "-m", &format!("finding {i}"), "-c", "0.5"])
+            .args([
+                "record",
+                "f.rs",
+                "1",
+                "1",
+                "risk",
+                "-m",
+                &format!("finding {i}"),
+                "-c",
+                "0.5",
+            ])
             .current_dir(dir.path())
             .assert()
             .success();
@@ -2059,7 +2239,9 @@ fn dispute_resolution_reason_teaches_close() {
     fs::write(dir.path().join("f.rs"), "fn x() {}\n").unwrap();
 
     let output = damask()
-        .args(["--format", "json", "record", "f.rs", "1", "1", "risk", "-m", "r", "-c", "0.8"])
+        .args([
+            "--format", "json", "record", "f.rs", "1", "1", "risk", "-m", "r", "-c", "0.8",
+        ])
         .current_dir(dir.path())
         .output()
         .unwrap();
@@ -2082,7 +2264,9 @@ fn dispute_resolution_reason_teaches_close() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Disputed"))
-        .stdout(predicate::str::contains(format!("damask close {edge_id} --reason resolved")));
+        .stdout(predicate::str::contains(format!(
+            "damask close {edge_id} --reason resolved"
+        )));
 
     // A raw payload starting "Fixed:" gets the same hint.
     damask()
@@ -2116,12 +2300,24 @@ fn triage_reports_then_closes_deleted_anchors() {
     set_ns(&dir, "test");
 
     damask()
-        .args(["record", "src/flow/gone.rs", "1", "1", "risk", "-m", "doomed", "-c", "0.8"])
+        .args([
+            "record",
+            "src/flow/gone.rs",
+            "1",
+            "1",
+            "risk",
+            "-m",
+            "doomed",
+            "-c",
+            "0.8",
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
     damask()
-        .args(["record", "live.rs", "1", "1", "risk", "-m", "alive", "-c", "0.8"])
+        .args([
+            "record", "live.rs", "1", "1", "risk", "-m", "alive", "-c", "0.8",
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
@@ -2141,7 +2337,7 @@ fn triage_reports_then_closes_deleted_anchors() {
         .args(["where", "rel=risk"])
         .current_dir(dir.path())
         .assert()
-        .stdout(predicate::str::contains("doomed"), );
+        .stdout(predicate::str::contains("doomed"));
 
     // Execute the proposed close: doomed disappears, alive stays.
     damask()
@@ -2156,7 +2352,10 @@ fn triage_reports_then_closes_deleted_anchors() {
         .output()
         .unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(!stdout.contains("doomed"), "closed edge must vanish from where");
+    assert!(
+        !stdout.contains("doomed"),
+        "closed edge must vanish from where"
+    );
     assert!(stdout.contains("alive"), "live edge must remain");
 }
 
@@ -2181,13 +2380,27 @@ fn confirm_reanchors_drifted_span() {
     set_ns(&dir, "test");
 
     damask()
-        .args(["record", "f.rs", "1", "2", "risk", "-m", "still true", "-c", "0.8"])
+        .args([
+            "record",
+            "f.rs",
+            "1",
+            "2",
+            "risk",
+            "-m",
+            "still true",
+            "-c",
+            "0.8",
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
 
     // Drift: prepend a line and commit, content moves to 2-3.
-    fs::write(dir.path().join("f.rs"), "// header\nfn keep() {}\nfn also() {}\n").unwrap();
+    fs::write(
+        dir.path().join("f.rs"),
+        "// header\nfn keep() {}\nfn also() {}\n",
+    )
+    .unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-qm", "drift"]);
 
@@ -2198,8 +2411,14 @@ fn confirm_reanchors_drifted_span() {
         .output()
         .unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains("f.rs:2-3"), "anchor must track the drift: {stdout}");
-    assert!(stdout.contains("damask confirm s_"), "drift hint must name the span");
+    assert!(
+        stdout.contains("f.rs:2-3"),
+        "anchor must track the drift: {stdout}"
+    );
+    assert!(
+        stdout.contains("damask confirm s_"),
+        "drift hint must name the span"
+    );
     let span_id = stdout
         .split("damask confirm ")
         .nth(1)
@@ -2223,8 +2442,14 @@ fn confirm_reanchors_drifted_span() {
         .output()
         .unwrap();
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains('\u{2705}'), "confirmed span must show exact: {stdout}");
-    assert!(!stdout.contains("drifted —"), "repair hint must clear after confirm");
+    assert!(
+        stdout.contains('\u{2705}'),
+        "confirmed span must show exact: {stdout}"
+    );
+    assert!(
+        !stdout.contains("drifted —"),
+        "repair hint must clear after confirm"
+    );
 }
 
 #[test]
@@ -2284,7 +2509,11 @@ fn init_claude_upgrades_unguarded_hooks_in_place() {
     let doc: serde_json::Value = serde_json::from_str(&settings).unwrap();
 
     let session_start = doc["hooks"]["SessionStart"].as_array().unwrap();
-    assert_eq!(session_start.len(), 1, "upgrade must not duplicate the entry");
+    assert_eq!(
+        session_start.len(),
+        1,
+        "upgrade must not duplicate the entry"
+    );
     let cmd = session_start[0]["hooks"][0]["command"].as_str().unwrap();
     assert!(cmd.contains("command -v damask") && cmd.contains("damask briefing"));
     assert_eq!(
@@ -2315,7 +2544,14 @@ fn writes_are_stamped_with_ambient_provenance() {
 
     fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
     damask()
-        .args(["record", "a.rs", "1", "1", "risk", r#"{"summary":"x","confidence":0.9}"#])
+        .args([
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "risk",
+            r#"{"summary":"x","confidence":0.9}"#,
+        ])
         .env("DAMASK_AGENT", "test-agent")
         .env("DAMASK_SESSION", "sess-42")
         .current_dir(dir.path())
@@ -2323,8 +2559,14 @@ fn writes_are_stamped_with_ambient_provenance() {
         .success();
 
     let log = fs::read_to_string(dir.path().join(".damask/edges/test.jsonl")).unwrap();
-    assert!(log.contains("\"agent\":\"test-agent\""), "agent should be stamped");
-    assert!(log.contains("\"session\":\"sess-42\""), "session should be stamped");
+    assert!(
+        log.contains("\"agent\":\"test-agent\""),
+        "agent should be stamped"
+    );
+    assert!(
+        log.contains("\"session\":\"sess-42\""),
+        "session should be stamped"
+    );
 }
 
 #[test]
@@ -2412,7 +2654,11 @@ fn peek_file_mode_injects_and_session_dedups() {
     fs::write(dir.path().join("auth.rs"), "fn validate() {}\n").unwrap();
     damask()
         .args([
-            "record", "auth.rs", "1", "1", "risk",
+            "record",
+            "auth.rs",
+            "1",
+            "1",
+            "risk",
             r#"{"summary":"No expiry check","confidence":0.9}"#,
         ])
         .current_dir(dir.path())
@@ -2455,7 +2701,11 @@ fn peek_marks_stale_anchors_instead_of_vouching() {
     fs::write(dir.path().join("doomed.rs"), "fn gone() {}\n").unwrap();
     damask()
         .args([
-            "record", "doomed.rs", "1", "1", "risk",
+            "record",
+            "doomed.rs",
+            "1",
+            "1",
+            "risk",
             r#"{"summary":"Race in gone()","confidence":0.95}"#,
         ])
         .current_dir(dir.path())
@@ -2481,7 +2731,11 @@ fn peek_posttooluse_hook_emits_additional_context() {
     fs::write(dir.path().join("auth.rs"), "fn validate() {}\n").unwrap();
     damask()
         .args([
-            "record", "auth.rs", "1", "1", "gotcha",
+            "record",
+            "auth.rs",
+            "1",
+            "1",
+            "gotcha",
             r#"{"summary":"Validation skipped when cfg missing","confidence":0.85}"#,
         ])
         .current_dir(dir.path())
@@ -2523,7 +2777,11 @@ fn peek_prompt_mode_matches_keywords() {
     fs::write(dir.path().join("auth.rs"), "fn validate() {}\n").unwrap();
     damask()
         .args([
-            "record", "auth.rs", "1", "1", "risk",
+            "record",
+            "auth.rs",
+            "1",
+            "1",
+            "risk",
             r#"{"summary":"Token expiry never validated","confidence":0.9}"#,
         ])
         .current_dir(dir.path())
@@ -2584,7 +2842,11 @@ fn verify_runs_checks_and_auto_records_once() {
     fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
     damask()
         .args([
-            "record", "a.rs", "1", "1", "risk",
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "risk",
             r#"{"summary":"holds","confidence":0.9,"check":"true"}"#,
         ])
         .current_dir(dir.path())
@@ -2592,7 +2854,11 @@ fn verify_runs_checks_and_auto_records_once() {
         .success();
     damask()
         .args([
-            "record", "a.rs", "1", "1", "risk",
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "risk",
             r#"{"summary":"broken","confidence":0.9,"check":"false"}"#,
         ])
         .current_dir(dir.path())
@@ -2624,7 +2890,10 @@ fn verify_runs_checks_and_auto_records_once() {
         .failure();
     let log = fs::read_to_string(dir.path().join(".damask/edges/test.jsonl")).unwrap();
     let auto_count = log.matches("\"check_auto\":true").count();
-    assert_eq!(auto_count, 2, "one auto-endorsement and one auto-dispute, no duplicates");
+    assert_eq!(
+        auto_count, 2,
+        "one auto-endorsement and one auto-dispute, no duplicates"
+    );
 }
 
 #[test]
@@ -2663,10 +2932,7 @@ fn harvest_quality_nudge_on_deficient_session_edges() {
         .clone();
     let doc: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(doc["decision"], "block");
-    assert!(doc["reason"]
-        .as_str()
-        .unwrap()
-        .contains("quality problems"));
+    assert!(doc["reason"].as_str().unwrap().contains("quality problems"));
 }
 
 #[test]
@@ -2678,7 +2944,11 @@ fn briefing_surfaces_suspect_spans() {
     fs::write(dir.path().join("a.rs"), "fn original() {}\nfn other() {}\n").unwrap();
     damask()
         .args([
-            "record", "a.rs", "1", "1", "risk",
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "risk",
             r#"{"summary":"original is risky","confidence":0.9}"#,
         ])
         .current_dir(dir.path())
@@ -2686,7 +2956,11 @@ fn briefing_surfaces_suspect_spans() {
         .success();
 
     // Rewrite the annotated line so the content hash no longer matches.
-    fs::write(dir.path().join("a.rs"), "fn rewritten_completely() {}\nfn other() {}\n").unwrap();
+    fs::write(
+        dir.path().join("a.rs"),
+        "fn rewritten_completely() {}\nfn other() {}\n",
+    )
+    .unwrap();
 
     damask()
         .arg("briefing")
@@ -2705,7 +2979,11 @@ fn search_where_filters_and_ranks() {
     fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
     damask()
         .args([
-            "record", "a.rs", "1", "1", "risk",
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "risk",
             r#"{"summary":"timeout risk high confidence","confidence":0.95}"#,
         ])
         .current_dir(dir.path())
@@ -2713,7 +2991,11 @@ fn search_where_filters_and_ranks() {
         .success();
     damask()
         .args([
-            "record", "a.rs", "1", "1", "risk",
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "risk",
             r#"{"summary":"timeout risk low confidence","confidence":0.3}"#,
         ])
         .current_dir(dir.path())
@@ -2749,10 +3031,18 @@ fn enrich_annotates_piped_results() {
     init_project(&dir);
     set_ns(&dir, "test");
 
-    fs::write(dir.path().join("auth.rs"), "fn validate() {}\nfn other() {}\n").unwrap();
+    fs::write(
+        dir.path().join("auth.rs"),
+        "fn validate() {}\nfn other() {}\n",
+    )
+    .unwrap();
     damask()
         .args([
-            "record", "auth.rs", "1", "1", "risk",
+            "record",
+            "auth.rs",
+            "1",
+            "1",
+            "risk",
             r#"{"summary":"expiry unchecked","confidence":0.9}"#,
         ])
         .current_dir(dir.path())
@@ -2797,7 +3087,11 @@ fn enrich_annotates_piped_results() {
             .contains("expiry"),
         "damask annotations attached"
     );
-    assert_eq!(lines.next().unwrap(), "not json", "junk passes through untouched");
+    assert_eq!(
+        lines.next().unwrap(),
+        "not json",
+        "junk passes through untouched"
+    );
 }
 
 #[test]
@@ -2806,9 +3100,20 @@ fn enrich_results_outside_annotated_range_get_nothing() {
     init_project(&dir);
     set_ns(&dir, "test");
 
-    fs::write(dir.path().join("auth.rs"), "fn a() {}\nfn b() {}\nfn c() {}\n").unwrap();
+    fs::write(
+        dir.path().join("auth.rs"),
+        "fn a() {}\nfn b() {}\nfn c() {}\n",
+    )
+    .unwrap();
     damask()
-        .args(["record", "auth.rs", "1", "1", "risk", r#"{"summary":"x","confidence":0.9}"#])
+        .args([
+            "record",
+            "auth.rs",
+            "1",
+            "1",
+            "risk",
+            r#"{"summary":"x","confidence":0.9}"#,
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
@@ -2837,7 +3142,14 @@ fn search_sem_falls_back_without_ck() {
 
     fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
     damask()
-        .args(["record", "a.rs", "1", "1", "risk", r#"{"summary":"timeout bug","confidence":0.9}"#])
+        .args([
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "risk",
+            r#"{"summary":"timeout bug","confidence":0.9}"#,
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
@@ -2870,7 +3182,11 @@ fn search_sem_uses_ck_when_available() {
     fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
     damask()
         .args([
-            "record", "a.rs", "1", "1", "risk",
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "risk",
             r#"{"summary":"credentials are not validated before use","confidence":0.9}"#,
         ])
         .current_dir(dir.path())
@@ -2910,7 +3226,10 @@ fn batch_bad_endpoint_error_teaches_syntax() {
         .stderr
         .clone();
     let err = String::from_utf8(output).unwrap();
-    assert!(err.contains("\"record\" is not a valid endpoint"), "names the bad value: {err}");
+    assert!(
+        err.contains("\"record\" is not a valid endpoint"),
+        "names the bad value: {err}"
+    );
     assert!(err.contains("$N"), "teaches back-reference syntax");
     assert!(err.contains("help batch"), "points to the reference");
 }
@@ -2924,7 +3243,9 @@ fn init_skill_sync_is_idempotent_and_self_healing() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Created .claude/skills/damask/SKILL.md"));
+        .stdout(predicate::str::contains(
+            "Created .claude/skills/damask/SKILL.md",
+        ));
 
     // Unchanged: no rewrite.
     damask()
@@ -2942,9 +3263,14 @@ fn init_skill_sync_is_idempotent_and_self_healing() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Updated .claude/skills/damask/SKILL.md"));
+        .stdout(predicate::str::contains(
+            "Updated .claude/skills/damask/SKILL.md",
+        ));
     let restored = fs::read_to_string(&skill_path).unwrap();
-    assert!(restored.contains("## Workflow"), "canonical content restored");
+    assert!(
+        restored.contains("## Workflow"),
+        "canonical content restored"
+    );
 }
 
 #[test]
@@ -2981,7 +3307,11 @@ fn review_markdown_is_pr_ready() {
     fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
     damask()
         .args([
-            "record", "a.rs", "1", "1", "risk",
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "risk",
             r#"{"summary":"needs review","confidence":0.9,"action":"check it"}"#,
         ])
         .current_dir(dir.path())
@@ -3120,7 +3450,10 @@ fn harvest_blocks_when_edits_unrecorded() {
     assert_eq!(doc["decision"], "block");
     let reason = doc["reason"].as_str().unwrap();
     assert!(reason.contains("auth.rs"), "reason should list edited file");
-    assert!(reason.contains("damask record"), "reason should show how to record");
+    assert!(
+        reason.contains("damask record"),
+        "reason should show how to record"
+    );
 }
 
 #[test]
@@ -3764,7 +4097,9 @@ fn init_codex_creates_skill() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Initialized .damask/"))
-        .stdout(predicate::str::contains("Created .agents/skills/damask/SKILL.md"));
+        .stdout(predicate::str::contains(
+            "Created .agents/skills/damask/SKILL.md",
+        ));
 
     // Verify skill file exists
     assert!(dir.path().join(".agents/skills/damask/SKILL.md").is_file());
@@ -3787,7 +4122,9 @@ fn init_codex_on_existing_project() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Found existing .damask/"))
-        .stdout(predicate::str::contains("Created .agents/skills/damask/SKILL.md"));
+        .stdout(predicate::str::contains(
+            "Created .agents/skills/damask/SKILL.md",
+        ));
 
     assert!(dir.path().join(".agents/skills/damask/SKILL.md").is_file());
 }

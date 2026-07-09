@@ -119,11 +119,9 @@ pub fn run(
                 );
             }
         }
-        let n = write_closes(
-            &project,
-            &matched,
-            |r| format!("Closed by triage — anchor file {} no longer exists", r.path),
-        )?;
+        let n = write_closes(&project, &matched, |r| {
+            format!("Closed by triage — anchor file {} no longer exists", r.path)
+        })?;
         println!("Closed {n} edges anchored to deleted files under '{prefix}'.");
         return Ok(());
     }
@@ -173,7 +171,9 @@ pub fn run(
     match format {
         Format::Human => {
             if deleted.is_empty() && refuted.is_empty() && ruled_out.is_empty() {
-                println!("No rot found: every open edge anchors to existing code and none are refuted.");
+                println!(
+                    "No rot found: every open edge anchors to existing code and none are refuted."
+                );
                 return Ok(());
             }
             println!();
@@ -184,7 +184,14 @@ pub fn run(
                 for (dir, count) in dirs.iter().take(10) {
                     let label = if dir.is_empty() { "<repo root>" } else { dir };
                     println!("    {label}  ({count} edges)");
-                    println!("      -> damask triage --close-deleted {}", if dir.is_empty() { "\"\"".to_string() } else { dir.clone() });
+                    println!(
+                        "      -> damask triage --close-deleted {}",
+                        if dir.is_empty() {
+                            "\"\"".to_string()
+                        } else {
+                            dir.clone()
+                        }
+                    );
                 }
                 if dirs.len() > 10 {
                     println!("    ... and {} more directories", dirs.len() - 10);
@@ -264,7 +271,10 @@ fn write_closes(
             agent: super::helpers::ambient_agent(),
             session: super::helpers::ambient_session(),
         };
-        by_ns.entry(r.ns.clone()).or_default().push(Fact::Edge(edge));
+        by_ns
+            .entry(r.ns.clone())
+            .or_default()
+            .push(Fact::Edge(edge));
     }
     let mut n = 0;
     for (ns, facts) in by_ns {

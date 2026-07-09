@@ -1,7 +1,6 @@
 use anyhow::Context;
 use damask_store::{
-    lint_edges, update_index_with_mode, DamaskProject, IndexMode, IndexQuery, LintInput,
-    Severity,
+    lint_edges, update_index_with_mode, DamaskProject, IndexMode, IndexQuery, LintInput, Severity,
 };
 use std::env;
 
@@ -85,9 +84,10 @@ pub fn run(format: Format) -> Result<()> {
             println!();
 
             // Find top issue rule
-            let mut rule_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+            let mut rule_counts: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
             for issue in &issues {
-                *rule_counts.entry(&issue.rule).or_insert(0) += 1;
+                *rule_counts.entry(issue.rule).or_insert(0) += 1;
             }
             let top_rule = rule_counts.iter().max_by_key(|(_, c)| **c);
             let top_hint = if let Some((rule, count)) = top_rule {

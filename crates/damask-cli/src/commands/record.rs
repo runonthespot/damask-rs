@@ -69,7 +69,9 @@ pub fn run(
     )?;
 
     // Namespace schemas assert domain vocabulary — validate before writing.
-    let config = project.read_config().map_err(|e| anyhow::anyhow!("{}", e))?;
+    let config = project
+        .read_config()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     config
         .validate_ns_payload(&ns, &payload_value)
         .map_err(|e| anyhow::anyhow!(e))?;

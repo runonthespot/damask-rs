@@ -39,7 +39,9 @@ pub fn run(
 
     let q = IndexQuery::new(&conn);
     let graph_stats = q.graph_stats().map_err(|e| anyhow::anyhow!("{}", e))?;
-    let config = project.read_config().map_err(|e| anyhow::anyhow!("{}", e))?;
+    let config = project
+        .read_config()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Semantic mode rides on ck when present; otherwise fall back to FTS
     // with a hint rather than failing — not everyone has both tools.
@@ -59,7 +61,10 @@ pub fn run(
                 if crate::ck::ck_available() {
                     eprintln!("note: semantic search failed; falling back to keyword search");
                 } else {
-                    eprintln!("note: --sem needs ck; using keyword search. {}", crate::ck::CK_HINT);
+                    eprintln!(
+                        "note: --sem needs ck; using keyword search. {}",
+                        crate::ck::CK_HINT
+                    );
                 }
                 fts_search(&q, query, ns, rel, show_closed)?
             }
@@ -145,7 +150,10 @@ pub fn run(
                     .unwrap_or_else(|| damask_core::truncate_str(&edge.payload, 60));
                 let date = edge.ts.split('T').next().unwrap_or(&edge.ts);
 
-                println!("  {} [{}] ({:.2}) — {}", edge.id, edge.rel, re.score, summary);
+                println!(
+                    "  {} [{}] ({:.2}) — {}",
+                    edge.id, edge.rel, re.score, summary
+                );
                 println!("    [{}, {}]", edge.ns, date);
                 println!();
             }
@@ -225,9 +233,9 @@ fn fts_search(
     let sanitized = super::helpers::sanitize_fts_query(query);
     if show_closed {
         q.search_fts(&sanitized, ns, rel)
-            .map_err(|e| anyhow::anyhow!("{}", e).into())
+            .map_err(|e| anyhow::anyhow!("{}", e))
     } else {
         q.search_fts_open(&sanitized, ns, rel)
-            .map_err(|e| anyhow::anyhow!("{}", e).into())
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 }

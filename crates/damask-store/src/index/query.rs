@@ -357,7 +357,8 @@ impl<'a> IndexQuery<'a> {
             .conn
             .prepare(&sql)
             .map_err(|e| StoreError::Io(e.to_string()))?;
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
             .query(params_refs.as_slice())
             .map_err(|e| StoreError::Io(e.to_string()))?;
@@ -372,16 +373,14 @@ impl<'a> IndexQuery<'a> {
                 format!("SELECT {EDGE_COLS} FROM edges WHERE ns = ?1"),
                 vec![Box::new(ns.to_string())],
             ),
-            None => (
-                format!("SELECT {EDGE_COLS} FROM edges"),
-                vec![],
-            ),
+            None => (format!("SELECT {EDGE_COLS} FROM edges"), vec![]),
         };
         let mut stmt = self
             .conn
             .prepare(&sql)
             .map_err(|e| StoreError::Io(e.to_string()))?;
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
             .query(params_refs.as_slice())
             .map_err(|e| StoreError::Io(e.to_string()))?;
@@ -391,7 +390,9 @@ impl<'a> IndexQuery<'a> {
     /// Look up a single span by ID.
     pub fn span_by_id(&self, id: &str) -> Result<Option<SpanRow>, StoreError> {
         let sql = format!("SELECT {SPAN_COLS} FROM spans WHERE id = ?1");
-        let result = self.conn.query_row(&sql, rusqlite::params![id], row_to_span);
+        let result = self
+            .conn
+            .query_row(&sql, rusqlite::params![id], row_to_span);
 
         match result {
             Ok(row) => Ok(Some(row)),
@@ -403,7 +404,9 @@ impl<'a> IndexQuery<'a> {
     /// Look up a single edge by ID.
     pub fn edge_by_id(&self, id: &str) -> Result<Option<EdgeRow>, StoreError> {
         let sql = format!("SELECT {EDGE_COLS} FROM edges WHERE id = ?1");
-        let result = self.conn.query_row(&sql, rusqlite::params![id], row_to_edge);
+        let result = self
+            .conn
+            .query_row(&sql, rusqlite::params![id], row_to_edge);
 
         match result {
             Ok(row) => Ok(Some(row)),
@@ -414,9 +417,7 @@ impl<'a> IndexQuery<'a> {
 
     /// Find all active edges where from_id matches (outgoing edges).
     pub fn edges_from(&self, id: &str) -> Result<Vec<EdgeRow>, StoreError> {
-        let sql = format!(
-            "SELECT {EDGE_COLS} FROM edges WHERE is_active = 1 AND from_id = ?1"
-        );
+        let sql = format!("SELECT {EDGE_COLS} FROM edges WHERE is_active = 1 AND from_id = ?1");
         let mut stmt = self
             .conn
             .prepare(&sql)
@@ -455,9 +456,7 @@ impl<'a> IndexQuery<'a> {
             .conn
             .prepare(&sql)
             .map_err(|e| StoreError::Io(e.to_string()))?;
-        let rows = stmt
-            .query([])
-            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let rows = stmt.query([]).map_err(|e| StoreError::Io(e.to_string()))?;
         collect_rows(rows, row_to_edge)
     }
 
@@ -492,7 +491,8 @@ impl<'a> IndexQuery<'a> {
             .conn
             .prepare(&sql)
             .map_err(|e| StoreError::Io(e.to_string()))?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
             .query(param_refs.as_slice())
             .map_err(|e| StoreError::Io(e.to_string()))?;
@@ -530,7 +530,8 @@ impl<'a> IndexQuery<'a> {
             .conn
             .prepare(&sql)
             .map_err(|e| StoreError::Io(e.to_string()))?;
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
             .query(param_refs.as_slice())
             .map_err(|e| StoreError::Io(e.to_string()))?;
@@ -558,7 +559,8 @@ impl<'a> IndexQuery<'a> {
             .conn
             .prepare(&sql)
             .map_err(|e| StoreError::Io(e.to_string()))?;
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
             .query(params_refs.as_slice())
             .map_err(|e| StoreError::Io(e.to_string()))?;
@@ -649,9 +651,7 @@ impl<'a> IndexQuery<'a> {
             .conn
             .prepare(&sql)
             .map_err(|e| StoreError::Io(e.to_string()))?;
-        let rows = stmt
-            .query([])
-            .map_err(|e| StoreError::Io(e.to_string()))?;
+        let rows = stmt.query([]).map_err(|e| StoreError::Io(e.to_string()))?;
         collect_rows(rows, row_to_span)
     }
 
@@ -1044,7 +1044,8 @@ mod tests {
             "INSERT INTO edges (id, from_id, to_id, rel, payload, ns, ts)
              VALUES ('e_end1', 'e_1', NULL, 'endorsed', '{}', 'test', '2025-01-02T00:00:00Z')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         // Dispute: from_id = target edge (e_1), to_id = null
         conn.execute(
             "INSERT INTO edges (id, from_id, to_id, rel, payload, ns, ts)

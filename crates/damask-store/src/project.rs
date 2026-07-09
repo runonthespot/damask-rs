@@ -93,9 +93,7 @@ impl DamaskProject {
             }
         }
         // Fall back to config default_ns
-        self.read_config()
-            .ok()
-            .and_then(|c| c.default_ns.clone())
+        self.read_config().ok().and_then(|c| c.default_ns.clone())
     }
 
     /// Set the active namespace by writing `.damask/.active_ns`.

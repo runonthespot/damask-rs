@@ -31,3 +31,7 @@ git2 = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/damask-{ target }.tar.gz"
+pkg-fmt = "tgz"

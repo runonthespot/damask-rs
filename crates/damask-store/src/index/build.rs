@@ -214,11 +214,7 @@ fn list_jsonl_files(edges_dir: &Path, mode: IndexMode) -> Vec<std::path::PathBuf
 
     match mode {
         IndexMode::FullLog => entries
-            .filter(|e| {
-                !e.path()
-                    .components()
-                    .any(|c| c.as_os_str() == ".views")
-            })
+            .filter(|e| !e.path().components().any(|c| c.as_os_str() == ".views"))
             .map(|e| e.into_path())
             .collect(),
         IndexMode::ViewsPreferred => {
@@ -229,9 +225,7 @@ fn list_jsonl_files(edges_dir: &Path, mode: IndexMode) -> Vec<std::path::PathBuf
 
             for entry in entries {
                 let path = entry.path();
-                let is_view = path
-                    .components()
-                    .any(|c| c.as_os_str() == ".views");
+                let is_view = path.components().any(|c| c.as_os_str() == ".views");
 
                 if is_view {
                     if let Some(ns) = view_namespace(path) {
@@ -255,7 +249,7 @@ fn list_jsonl_files(edges_dir: &Path, mode: IndexMode) -> Vec<std::path::PathBuf
                 }
             }
 
-            files.sort_by(|a, b| a.display().to_string().cmp(&b.display().to_string()));
+            files.sort_by_key(|a| a.display().to_string());
             files
         }
     }
@@ -328,10 +322,7 @@ fn find_changed_files(
 }
 
 /// Store file mtimes in the index_meta table for future incremental checks.
-fn store_file_mtimes(
-    conn: &Connection,
-    files: &[std::path::PathBuf],
-) -> Result<(), StoreError> {
+fn store_file_mtimes(conn: &Connection, files: &[std::path::PathBuf]) -> Result<(), StoreError> {
     let mut stmt = conn
         .prepare("INSERT OR REPLACE INTO index_meta (key, value) VALUES (?1, ?2)")
         .map_err(|e| StoreError::Io(e.to_string()))?;
@@ -603,7 +594,13 @@ fn refresh_spans(
 fn resolve_to_columns(
     project_root: &Path,
     anchor: &SpanAnchor,
-) -> (Option<String>, Option<String>, Option<u32>, Option<u32>, String) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<u32>,
+    Option<u32>,
+    String,
+) {
     match resolve_span(project_root, anchor) {
         Ok(result) => {
             let res = match result.freshness.resolution {
@@ -715,8 +712,10 @@ fn find_deleted_files(
     conn: &Connection,
     current_files: &[PathBuf],
 ) -> Result<Vec<PathBuf>, StoreError> {
-    let current_set: std::collections::HashSet<String> =
-        current_files.iter().map(|p| p.display().to_string()).collect();
+    let current_set: std::collections::HashSet<String> = current_files
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
 
     let mut stmt = conn
         .prepare("SELECT key FROM index_meta WHERE key LIKE 'mtime:%'")
@@ -803,8 +802,7 @@ fn insert_facts(
     // re-anchoring (`damask confirm`): the later fact carries a fresh
     // anchor that may share the old content_hash, so reuse must not
     // resurrect the superseded resolution — resolve those fresh.
-    let mut span_id_counts: std::collections::HashMap<&str, u32> =
-        std::collections::HashMap::new();
+    let mut span_id_counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
     for (fact, _) in facts {
         if let Fact::Span(s) = fact {
             *span_id_counts.entry(s.id.as_str()).or_insert(0) += 1;
@@ -815,33 +813,38 @@ fn insert_facts(
         let source_file_str = source_path.display().to_string();
         match fact {
             Fact::Span(s) => {
-                let (resolution_str, recency_str, effective_line_start, effective_line_end, effective_path) =
-                    match reuse.get(s.id.as_str()).filter(|r| {
-                        span_id_counts.get(s.id.as_str()) == Some(&1)
-                            && r.resolution.is_some()
-                            && r.content_hash == s.content_hash
-                    }) {
-                        Some(r) => (
-                            r.resolution.clone(),
-                            r.recency.clone(),
-                            r.line_start,
-                            r.line_end,
-                            r.path.clone(),
-                        ),
-                        None => {
-                            // New or changed span: run the resolution cascade.
-                            let anchor = SpanAnchor {
-                                path: s.path.clone(),
-                                line_start: s.lines.map(|l| l[0]),
-                                line_end: s.lines.map(|l| l[1]),
-                                content_hash: s.content_hash.clone(),
-                                symbol: s.symbol.clone(),
-                                snippet: s.snippet.clone(),
-                                commit: s.commit.clone(),
-                            };
-                            resolve_to_columns(project_root, &anchor)
-                        }
-                    };
+                let (
+                    resolution_str,
+                    recency_str,
+                    effective_line_start,
+                    effective_line_end,
+                    effective_path,
+                ) = match reuse.get(s.id.as_str()).filter(|r| {
+                    span_id_counts.get(s.id.as_str()) == Some(&1)
+                        && r.resolution.is_some()
+                        && r.content_hash == s.content_hash
+                }) {
+                    Some(r) => (
+                        r.resolution.clone(),
+                        r.recency.clone(),
+                        r.line_start,
+                        r.line_end,
+                        r.path.clone(),
+                    ),
+                    None => {
+                        // New or changed span: run the resolution cascade.
+                        let anchor = SpanAnchor {
+                            path: s.path.clone(),
+                            line_start: s.lines.map(|l| l[0]),
+                            line_end: s.lines.map(|l| l[1]),
+                            content_hash: s.content_hash.clone(),
+                            symbol: s.symbol.clone(),
+                            snippet: s.snippet.clone(),
+                            commit: s.commit.clone(),
+                        };
+                        resolve_to_columns(project_root, &anchor)
+                    }
+                };
 
                 span_stmt
                     .execute(rusqlite::params![

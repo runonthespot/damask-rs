@@ -170,7 +170,10 @@ fn apply_auto(
         ),
         Outcome::TimedOut => (
             "disputed",
-            format!("check timed out: `{}`", damask_core::truncate_str(check, 80)),
+            format!(
+                "check timed out: `{}`",
+                damask_core::truncate_str(check, 80)
+            ),
         ),
     };
 
@@ -220,7 +223,10 @@ fn print_human(results: &[CheckResult], auto: bool) {
             Outcome::Passed => ("\u{2713}", "pass".to_string()),
             Outcome::Failed(code) => (
                 "\u{2717}",
-                format!("fail (exit {})", code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())),
+                format!(
+                    "fail (exit {})",
+                    code.map(|c| c.to_string()).unwrap_or_else(|| "?".into())
+                ),
             ),
             Outcome::TimedOut => ("\u{2717}", "timeout".to_string()),
         };
@@ -237,7 +243,11 @@ fn print_human(results: &[CheckResult], auto: bool) {
         .filter(|r| matches!(r.outcome, Outcome::Passed))
         .count();
     println!();
-    println!("  {passed}/{} checks passed{}", results.len(), if auto { " (--auto applied)" } else { "" });
+    println!(
+        "  {passed}/{} checks passed{}",
+        results.len(),
+        if auto { " (--auto applied)" } else { "" }
+    );
 }
 
 fn print_json(results: &[CheckResult]) {

@@ -43,10 +43,10 @@ const MAX_KEYWORDS: usize = 8;
 
 const STOPWORDS: &[&str] = &[
     "this", "that", "with", "from", "what", "when", "where", "does", "have", "will", "about",
-    "should", "could", "would", "there", "their", "then", "than", "them", "they", "please",
-    "into", "just", "like", "make", "need", "want", "your", "file", "code", "also", "some",
-    "more", "over", "very", "been", "being", "were", "each", "which", "while", "after",
-    "before", "because", "through", "look", "show", "help", "work", "change", "update",
+    "should", "could", "would", "there", "their", "then", "than", "them", "they", "please", "into",
+    "just", "like", "make", "need", "want", "your", "file", "code", "also", "some", "more", "over",
+    "very", "been", "being", "were", "each", "which", "while", "after", "before", "because",
+    "through", "look", "show", "help", "work", "change", "update",
 ];
 
 enum Mode {
@@ -87,16 +87,14 @@ pub fn run(file: Option<&str>, prompt: Option<&str>, session: Option<&str>) -> R
                     None => return Ok(()),
                 }
             }
-            Some("UserPromptSubmit") => {
-                match hook.get("prompt").and_then(|v| v.as_str()) {
-                    Some(p) => (
-                        Mode::Prompt(p.to_string()),
-                        session_id,
-                        Some("UserPromptSubmit"),
-                    ),
-                    None => return Ok(()),
-                }
-            }
+            Some("UserPromptSubmit") => match hook.get("prompt").and_then(|v| v.as_str()) {
+                Some(p) => (
+                    Mode::Prompt(p.to_string()),
+                    session_id,
+                    Some("UserPromptSubmit"),
+                ),
+                None => return Ok(()),
+            },
             _ => return Ok(()),
         }
     };
@@ -255,12 +253,15 @@ fn render(q: &IndexQuery, edges: &[&RankedEdge], subject: Option<&str>) -> Strin
             .confidence()
             .map(|c| format!(" ({c:.2})"))
             .unwrap_or_default();
-        let disputed = if re.dispute_count > 0 { " [disputed]" } else { "" };
+        let disputed = if re.dispute_count > 0 {
+            " [disputed]"
+        } else {
+            ""
+        };
         let stale = staleness_marker(q, &re.edge);
-        let summary = env
-            .summary()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| damask_core::truncate_str(&re.edge.payload, SUMMARY_WIDTH).to_string());
+        let summary = env.summary().map(|s| s.to_string()).unwrap_or_else(|| {
+            damask_core::truncate_str(&re.edge.payload, SUMMARY_WIDTH).to_string()
+        });
         let trunc = damask_core::truncate_str(&summary, SUMMARY_WIDTH);
         text.push_str(&format!(
             "- {}{conf}{stale}{disputed}: {trunc} [{}]\n",
@@ -286,7 +287,12 @@ fn seen_path(project: &DamaskProject, session_id: Option<&str>) -> Option<PathBu
     if sid.is_empty() {
         return None;
     }
-    Some(project.damask_dir.join(".session").join(format!("{sid}.seen")))
+    Some(
+        project
+            .damask_dir
+            .join(".session")
+            .join(format!("{sid}.seen")),
+    )
 }
 
 fn load_seen(project: &DamaskProject, session_id: Option<&str>) -> HashSet<String> {
@@ -360,7 +366,8 @@ mod tests {
 
     #[test]
     fn keywords_dedupe_and_cap() {
-        let kw = extract_keywords("auth auth auth alpha beta gamma delta epsilon zeta theta iota kappa");
+        let kw =
+            extract_keywords("auth auth auth alpha beta gamma delta epsilon zeta theta iota kappa");
         assert_eq!(kw.len(), MAX_KEYWORDS);
         assert_eq!(kw.iter().filter(|k| *k == "auth").count(), 1);
     }
@@ -370,7 +377,10 @@ mod tests {
         // Punctuation and operators must not leak into tokens.
         let kw = extract_keywords("what's NEAR(\"this\") AND co-change OR src/auth.rs?");
         for k in &kw {
-            assert!(k.chars().all(|c| c.is_ascii_alphanumeric()), "unsafe token: {k}");
+            assert!(
+                k.chars().all(|c| c.is_ascii_alphanumeric()),
+                "unsafe token: {k}"
+            );
         }
     }
 }

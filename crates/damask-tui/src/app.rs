@@ -179,9 +179,8 @@ impl App {
             DamaskProject::discover(&self.project_root).map_err(|e| anyhow::anyhow!("{}", e))?;
         let db_path = project.damask_dir.join("index.db");
         let edges_dir = project.damask_dir.join("edges");
-        let conn =
-            update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let conn = update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
         let fresh = App::load(&project, &conn)?;
 
         self.stats = fresh.stats;

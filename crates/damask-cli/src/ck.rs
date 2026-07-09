@@ -92,7 +92,11 @@ pub fn semantic_edge_hits(
             }),
         }
     }
-    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     hits.truncate(limit);
     Some(hits)
 }
@@ -131,7 +135,10 @@ pub fn ensure_knowledge_export(project: &DamaskProject) -> std::io::Result<()> {
     if knowledge_dir.exists() {
         for entry in std::fs::read_dir(&knowledge_dir)?.flatten() {
             if entry.path().is_dir()
-                && entry.file_name().to_str().map_or(false, |n| !n.starts_with('.'))
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|n| !n.starts_with('.'))
             {
                 std::fs::remove_dir_all(entry.path())?;
             }
@@ -190,7 +197,12 @@ mod tests {
     use damask_core::{Edge, EdgeId, Fact};
     use damask_store::FactWriter;
 
-    fn write_edge(project: &DamaskProject, ns: &str, rel: &str, payload: serde_json::Value) -> String {
+    fn write_edge(
+        project: &DamaskProject,
+        ns: &str,
+        rel: &str,
+        payload: serde_json::Value,
+    ) -> String {
         let edge = Edge {
             id: EdgeId::new(),
             from: None,
@@ -239,7 +251,12 @@ mod tests {
     fn export_skips_meta_edges_and_summaryless_edges() {
         let tmp = tempfile::tempdir().unwrap();
         let project = DamaskProject::init(tmp.path()).unwrap();
-        write_edge(&project, "test", "risk", serde_json::json!({"confidence": 0.5}));
+        write_edge(
+            &project,
+            "test",
+            "risk",
+            serde_json::json!({"confidence": 0.5}),
+        );
         let target = write_edge(
             &project,
             "test",

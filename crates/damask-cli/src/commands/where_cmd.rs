@@ -1,6 +1,9 @@
 use anyhow::Context;
 use damask_core::PayloadEnvelope;
-use damask_store::{needs_inactive_edges, rank_edges, update_index_with_mode, DamaskProject, GraphStats, IndexMode, IndexQuery, Predicate, RankedEdge};
+use damask_store::{
+    needs_inactive_edges, rank_edges, update_index_with_mode, DamaskProject, GraphStats, IndexMode,
+    IndexQuery, Predicate, RankedEdge,
+};
 use std::collections::HashMap;
 use std::env;
 
@@ -19,7 +22,17 @@ pub enum WhereSort {
     Ts,
 }
 
-pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, offset: usize, show_closed: bool, sort: WhereSort, format: Format, ns: Option<&str>) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    predicate_strs: &[String],
+    since: Option<&str>,
+    limit: usize,
+    offset: usize,
+    show_closed: bool,
+    sort: WhereSort,
+    format: Format,
+    ns: Option<&str>,
+) -> Result<()> {
     // A boolean operator INSIDE one predicate arg silently matched nothing
     // (exit 0, zero rows) — the classic "the graph taught me it's empty"
     // failure. Catch it and show the multi-arg form.
@@ -60,9 +73,11 @@ pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, offset:
     let all_edges = if needs_inactive_edges(&preds) {
         q.all_edges_ns(ns).map_err(|e| anyhow::anyhow!("{}", e))?
     } else if show_closed {
-        q.all_active_edges_ns(ns).map_err(|e| anyhow::anyhow!("{}", e))?
+        q.all_active_edges_ns(ns)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
     } else {
-        q.all_active_open_edges_ns(ns).map_err(|e| anyhow::anyhow!("{}", e))?
+        q.all_active_open_edges_ns(ns)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
     };
 
     // Count closed edges hidden (for diagnostics)
@@ -90,7 +105,10 @@ pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, offset:
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         // AND-compose: all predicates must match
-        if preds.iter().all(|p| p.matches(edge, endorsement_count, dispute_count)) {
+        if preds
+            .iter()
+            .all(|p| p.matches(edge, endorsement_count, dispute_count))
+        {
             matched.push((edge.clone(), endorsement_count, dispute_count));
         }
     }
@@ -152,8 +170,32 @@ pub fn run(predicate_strs: &[String], since: Option<&str>, limit: usize, offset:
     let predicate_display = predicate_strs.join(" AND ");
 
     match format {
-        Format::Human => print_human(&page, &anchor_spans, &predicate_display, offset, limit, count, total, closed_hidden as usize, &preds, &all_edges, &q),
-        Format::Json => print_json(&page, &anchor_spans, offset, limit, count, total, closed_hidden, &graph_stats, &preds, &all_edges, &q),
+        Format::Human => print_human(
+            &page,
+            &anchor_spans,
+            &predicate_display,
+            offset,
+            limit,
+            count,
+            total,
+            closed_hidden as usize,
+            &preds,
+            &all_edges,
+            &q,
+        ),
+        Format::Json => print_json(
+            &page,
+            &anchor_spans,
+            offset,
+            limit,
+            count,
+            total,
+            closed_hidden,
+            &graph_stats,
+            &preds,
+            &all_edges,
+            &q,
+        ),
     }
 
     Ok(())
@@ -181,6 +223,7 @@ fn anchor_display(
     format!(" {}{}{}", span.path, lines, glyph_suffix)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_human(
     matched: &[&RankedEdge],
     anchor_spans: &HashMap<String, damask_store::index::query::SpanRow>,
@@ -198,13 +241,19 @@ fn print_human(
         println!("0 edges matching: {predicate}");
         // Near-miss diagnostics for numeric fields
         if let Some(near_miss) = compute_near_miss(preds, all_edges, q) {
-            println!("  Nearest miss: {}={} ({} edges at this level)", near_miss.field, near_miss.nearest_value, near_miss.count_at_nearest);
+            println!(
+                "  Nearest miss: {}={} ({} edges at this level)",
+                near_miss.field, near_miss.nearest_value, near_miss.count_at_nearest
+            );
         }
         if total > 0 {
             println!("  {} total matched before pagination", total);
         }
         let active = all_edges.len();
-        println!("  {} active edges exist — try broadening your query", active);
+        println!(
+            "  {} active edges exist — try broadening your query",
+            active
+        );
         return;
     }
 
@@ -255,7 +304,15 @@ fn print_human(
 
         println!(
             "  {} [{}]{}{}{}{}{}{} — {}",
-            edge.id, edge.rel, conf, severity_str, status_str, endorsement_str, dispute_str, anchor, summary,
+            edge.id,
+            edge.rel,
+            conf,
+            severity_str,
+            status_str,
+            endorsement_str,
+            dispute_str,
+            anchor,
+            summary,
         );
         if anchor.is_empty() {
             let from_str = edge.from_id.as_deref().unwrap_or("_");
@@ -274,7 +331,10 @@ fn print_human(
     } else {
         String::new()
     };
-    println!("Showing {}-{} of {} edges matching: {}{}", start, end, total, predicate, closed_hint);
+    println!(
+        "Showing {}-{} of {} edges matching: {}{}",
+        start, end, total, predicate, closed_hint
+    );
 
     // Next-page hint
     if offset + count < total {
@@ -284,6 +344,7 @@ fn print_human(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn print_json(
     matched: &[&RankedEdge],
     anchor_spans: &HashMap<String, damask_store::index::query::SpanRow>,
@@ -388,7 +449,10 @@ fn compute_near_miss(
     // Find the first numeric-field predicate (confidence or endorsed)
     let numeric_pred = preds.iter().find(|p| {
         matches!(p.field.as_str(), "confidence" | "endorsed" | "disputed")
-            && matches!(p.op, CompareOp::Gt | CompareOp::Gte | CompareOp::Lt | CompareOp::Lte)
+            && matches!(
+                p.op,
+                CompareOp::Gt | CompareOp::Gte | CompareOp::Lt | CompareOp::Lte
+            )
     })?;
 
     let threshold: f64 = numeric_pred.value.parse().ok()?;
@@ -433,17 +497,28 @@ fn compute_near_miss(
     let is_gt = matches!(numeric_pred.op, CompareOp::Gt | CompareOp::Gte);
     let nearest = if is_gt {
         // Looking for values > threshold but none found; find max value below threshold
-        values.iter().copied().filter(|&v| v <= threshold).fold(None, |acc: Option<f64>, v| {
-            Some(acc.map_or(v, |a: f64| a.max(v)))
-        })?
+        values
+            .iter()
+            .copied()
+            .filter(|&v| v <= threshold)
+            .fold(None, |acc: Option<f64>, v| {
+                Some(acc.map_or(v, |a: f64| a.max(v)))
+            })?
     } else {
         // Looking for values < threshold but none found; find min value above threshold
-        values.iter().copied().filter(|&v| v >= threshold).fold(None, |acc: Option<f64>, v| {
-            Some(acc.map_or(v, |a: f64| a.min(v)))
-        })?
+        values
+            .iter()
+            .copied()
+            .filter(|&v| v >= threshold)
+            .fold(None, |acc: Option<f64>, v| {
+                Some(acc.map_or(v, |a: f64| a.min(v)))
+            })?
     };
 
-    let count_at_nearest = values.iter().filter(|&&v| (v - nearest).abs() < f64::EPSILON).count();
+    let count_at_nearest = values
+        .iter()
+        .filter(|&&v| (v - nearest).abs() < f64::EPSILON)
+        .count();
 
     Some(NearMiss {
         field: numeric_pred.field.clone(),

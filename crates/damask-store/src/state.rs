@@ -137,20 +137,8 @@ mod tests {
     fn meta_edges_not_active() {
         let conn = setup_db();
         insert_edge(&conn, "e_content", Some("s_1"), None, "risk");
-        insert_edge(
-            &conn,
-            "e_endorse",
-            Some("e_content"),
-            None,
-            "endorsed",
-        );
-        insert_edge(
-            &conn,
-            "e_dispute",
-            Some("e_content"),
-            None,
-            "disputed",
-        );
+        insert_edge(&conn, "e_endorse", Some("e_content"), None, "endorsed");
+        insert_edge(&conn, "e_dispute", Some("e_content"), None, "disputed");
 
         compute_active_state(&conn).unwrap();
 

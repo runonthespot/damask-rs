@@ -1,5 +1,11 @@
 /// Meta-relationship types that operate on edges rather than spans.
-pub const META_RELS: &[&str] = &["supersedes", "invalidates", "endorsed", "disputed", "closed"];
+pub const META_RELS: &[&str] = &[
+    "supersedes",
+    "invalidates",
+    "endorsed",
+    "disputed",
+    "closed",
+];
 
 /// Judgment relationship types — edges that represent analysis findings.
 pub const JUDGMENT_RELS: &[&str] = &[
@@ -122,8 +128,14 @@ mod tests {
     #[test]
     fn rank_weights_content_equal() {
         // All content classes rank equally
-        assert_eq!(RelClass::Judgment.rank_weight(), RelClass::Other.rank_weight());
-        assert_eq!(RelClass::Other.rank_weight(), RelClass::Descriptive.rank_weight());
+        assert_eq!(
+            RelClass::Judgment.rank_weight(),
+            RelClass::Other.rank_weight()
+        );
+        assert_eq!(
+            RelClass::Other.rank_weight(),
+            RelClass::Descriptive.rank_weight()
+        );
         // Only meta-edges are excluded
         assert!(RelClass::Descriptive.rank_weight() > RelClass::Meta.rank_weight());
         assert_eq!(RelClass::Meta.rank_weight(), 0.0);

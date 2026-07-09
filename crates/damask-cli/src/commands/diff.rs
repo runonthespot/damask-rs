@@ -27,9 +27,18 @@ pub fn run(ns_a: &str, ns_b: &str, format: Format) -> Result<()> {
     let ids_a: HashSet<&str> = edges_a.iter().map(|e| e.id.as_str()).collect();
     let ids_b: HashSet<&str> = edges_b.iter().map(|e| e.id.as_str()).collect();
 
-    let only_a: Vec<_> = edges_a.iter().filter(|e| !ids_b.contains(e.id.as_str())).collect();
-    let only_b: Vec<_> = edges_b.iter().filter(|e| !ids_a.contains(e.id.as_str())).collect();
-    let shared: Vec<_> = edges_a.iter().filter(|e| ids_b.contains(e.id.as_str())).collect();
+    let only_a: Vec<_> = edges_a
+        .iter()
+        .filter(|e| !ids_b.contains(e.id.as_str()))
+        .collect();
+    let only_b: Vec<_> = edges_b
+        .iter()
+        .filter(|e| !ids_a.contains(e.id.as_str()))
+        .collect();
+    let shared: Vec<_> = edges_a
+        .iter()
+        .filter(|e| ids_b.contains(e.id.as_str()))
+        .collect();
 
     match format {
         Format::Human => {
@@ -63,21 +72,22 @@ pub fn run(ns_a: &str, ns_b: &str, format: Format) -> Result<()> {
             );
         }
         Format::Json => {
-            let to_json = |edges: &[&&damask_store::index::query::EdgeRow]| -> Vec<serde_json::Value> {
-                edges
-                    .iter()
-                    .map(|e| {
-                        let payload: serde_json::Value =
-                            serde_json::from_str(&e.payload).unwrap_or(serde_json::json!({}));
-                        serde_json::json!({
-                            "id": e.id,
-                            "rel": e.rel,
-                            "payload": payload,
-                            "ts": e.ts,
+            let to_json =
+                |edges: &[&&damask_store::index::query::EdgeRow]| -> Vec<serde_json::Value> {
+                    edges
+                        .iter()
+                        .map(|e| {
+                            let payload: serde_json::Value =
+                                serde_json::from_str(&e.payload).unwrap_or(serde_json::json!({}));
+                            serde_json::json!({
+                                "id": e.id,
+                                "rel": e.rel,
+                                "payload": payload,
+                                "ts": e.ts,
+                            })
                         })
-                    })
-                    .collect()
-            };
+                        .collect()
+                };
 
             let output = serde_json::json!({
                 "ns_a": ns_a,
