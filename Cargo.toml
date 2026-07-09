@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
-repository = "https://github.com/runonthespot/damask"
+repository = "https://github.com/runonthespot/damask-rs"
 
 [workspace.dependencies]
 # Internal — version alongside path so the workspace is publishable to

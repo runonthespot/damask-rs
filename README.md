@@ -59,8 +59,8 @@ space that does all three of these at once:
 
 ```bash
 # install from source (crates.io publish coming — see Releasing)
-git clone https://github.com/runonthespot/damask
-cd damask && cargo install --path crates/damask-cli
+git clone https://github.com/runonthespot/damask-rs
+cd damask-rs && cargo install --path crates/damask-cli
 
 # in your repo
 cd ~/my-project
