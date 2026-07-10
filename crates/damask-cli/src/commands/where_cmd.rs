@@ -10,7 +10,8 @@ use std::env;
 use crate::error::Result;
 use crate::output::Format;
 
-use super::at::{edge_target_span_id, freshness_glyph};
+use super::at::edge_target_span_id;
+use crate::output::render::{self, freshness_glyph};
 use super::helpers;
 
 /// Result ordering for `where`.
@@ -264,33 +265,7 @@ fn print_human(
             serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
         let env = PayloadEnvelope::new(&payload);
 
-        // Confidence
-        let conf = env
-            .confidence()
-            .map(|c| format!(" ({:.2})", c))
-            .unwrap_or_default();
-
-        let severity_str = env
-            .severity()
-            .map(|sv| format!(" [{sv}]"))
-            .unwrap_or_default();
-        let status_str = match env.status() {
-            Some("ruled_out") => " [ruled out]",
-            Some("hypothesis") => " [hypothesis]",
-            _ => "",
-        };
-
-        // Endorsement/dispute counts
-        let endorsement_str = if re.endorsement_count > 0 {
-            format!(" \u{00D7}{}\u{2713}", re.endorsement_count)
-        } else {
-            String::new()
-        };
-        let dispute_str = if re.dispute_count > 0 {
-            format!(" \u{00D7}{}\u{2717}", re.dispute_count)
-        } else {
-            String::new()
-        };
+        let cluster = render::signal_cluster(&env, re.endorsement_count, re.dispute_count);
 
         // Summary
         let summary = env
@@ -303,16 +278,8 @@ fn print_human(
         let date = edge.ts.split('T').next().unwrap_or(&edge.ts);
 
         println!(
-            "  {} [{}]{}{}{}{}{}{} — {}",
-            edge.id,
-            edge.rel,
-            conf,
-            severity_str,
-            status_str,
-            endorsement_str,
-            dispute_str,
-            anchor,
-            summary,
+            "  {} [{}]{}{} — {}",
+            edge.id, edge.rel, cluster, anchor, summary,
         );
         if anchor.is_empty() {
             let from_str = edge.from_id.as_deref().unwrap_or("_");
@@ -361,35 +328,8 @@ fn print_json(
     let edges_json: Vec<serde_json::Value> = matched
         .iter()
         .map(|re| {
-            let edge = &re.edge;
-            let payload: serde_json::Value =
-                serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
-            let span_json = edge_target_span_id(edge)
-                .and_then(|id| anchor_spans.get(id))
-                .map(|span| {
-                    serde_json::json!({
-                        "id": span.id,
-                        "path": span.path,
-                        "line_start": span.line_start,
-                        "line_end": span.line_end,
-                        "resolution": span.resolution,
-                        "recency": span.recency,
-                    })
-                })
-                .unwrap_or(serde_json::Value::Null);
-            serde_json::json!({
-                "id": edge.id,
-                "from": edge.from_id,
-                "to": edge.to_id,
-                "rel": edge.rel,
-                "payload": payload,
-                "ns": edge.ns,
-                "ts": edge.ts,
-                "score": re.score,
-                "endorsements": re.endorsement_count,
-                "disputes": re.dispute_count,
-                "span": span_json,
-            })
+            let anchor = edge_target_span_id(&re.edge).and_then(|id| anchor_spans.get(id));
+            render::edge_json(re, anchor)
         })
         .collect();
 

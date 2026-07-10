@@ -2854,6 +2854,97 @@ fn peek_ignores_non_file_tools_and_fails_open() {
 }
 
 #[test]
+fn trust_signals_uniform_across_read_surfaces() {
+    // The same edge must carry the same trust signals — confidence in the
+    // (x.xx) slot, anchor freshness, edge id — on every read surface, both
+    // formats. Regression for the at-json/search gap where staleness was
+    // silently dropped.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("doomed.rs"), "fn gone() {}\n").unwrap();
+    let out = damask()
+        .args([
+            "--format",
+            "json",
+            "record",
+            "doomed.rs",
+            "1",
+            "1",
+            "risk",
+            r#"{"summary":"token expiry bug lurking","confidence":0.9}"#,
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let facts: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let edge_id = facts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rel"] == "risk")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Anchor goes stale.
+    fs::remove_file(dir.path().join("doomed.rs")).unwrap();
+
+    // at --format json: spans and edge anchors carry resolution/recency.
+    let out = damask()
+        .args(["--format", "json", "at", "doomed.rs"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(doc["spans"][0]["resolution"], "missing");
+    assert!(doc["spans"][0].get("recency").is_some());
+    assert_eq!(doc["edges"][0]["span"]["resolution"], "missing");
+
+    // at human: the edge id is printed, closing the endorse/dispute loop.
+    damask()
+        .args(["at", "doomed.rs"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&edge_id))
+        .stdout(predicate::str::contains("(0.90)"));
+
+    // search human: confidence in the (x.xx) slot (not rank score), anchor
+    // path with the ❌ freshness glyph, edge id present.
+    damask()
+        .args(["search", "expiry"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&edge_id))
+        .stdout(predicate::str::contains("(0.90)"))
+        .stdout(predicate::str::contains("doomed.rs:1-1"))
+        .stdout(predicate::str::contains("\u{274C}"));
+
+    // search --format json: the anchor span rides along with freshness.
+    let out = damask()
+        .args(["--format", "json", "search", "expiry"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(doc["results"][0]["span"]["resolution"], "missing");
+    assert_eq!(doc["results"][0]["payload"]["confidence"], 0.9);
+}
+
+#[test]
 fn record_broadcast_flag_sets_payload_field() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);

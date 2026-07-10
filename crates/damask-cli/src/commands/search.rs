@@ -116,6 +116,20 @@ pub fn run(
     let page: Vec<RankedEdge> = ranked.into_iter().skip(offset).take(limit).collect();
     let count = page.len();
 
+    // Anchor spans for the page: search results leave the file context
+    // behind, so each hit must carry its own location + freshness.
+    let mut anchor_spans: std::collections::HashMap<String, damask_store::index::query::SpanRow> =
+        std::collections::HashMap::new();
+    for re in &page {
+        if let Some(id) = super::at::edge_target_span_id(&re.edge) {
+            if !anchor_spans.contains_key(id) {
+                if let Some(span) = q.span_by_id(id).ok().flatten() {
+                    anchor_spans.insert(id.to_string(), span);
+                }
+            }
+        }
+    }
+
     match format {
         Format::Human => {
             if count == 0 {
@@ -150,10 +164,32 @@ pub fn run(
                     .unwrap_or_else(|| damask_core::truncate_str(&edge.payload, 60));
                 let date = edge.ts.split('T').next().unwrap_or(&edge.ts);
 
-                println!(
-                    "  {} [{}] ({:.2}) — {}",
-                    edge.id, edge.rel, re.score, summary
-                );
+                // Same signal vocabulary as `at`/`where`: (x.xx) is the
+                // author's confidence (rank is already the list order),
+                // anchor carries the freshness glyph.
+                let cluster =
+                    crate::output::render::signal_cluster(&env, re.endorsement_count, re.dispute_count);
+                let anchor = super::at::edge_target_span_id(edge)
+                    .and_then(|id| anchor_spans.get(id))
+                    .map(|s| {
+                        let lines = match (s.line_start, s.line_end) {
+                            (Some(a), Some(b)) => format!(":{}-{}", a, b),
+                            _ => String::new(),
+                        };
+                        let glyph = crate::output::render::freshness_glyph(
+                            s.resolution.as_deref(),
+                            s.recency.as_deref(),
+                        );
+                        let glyph_suffix = if glyph.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {}", glyph)
+                        };
+                        format!(" {}{}{}", s.path, lines, glyph_suffix)
+                    })
+                    .unwrap_or_default();
+
+                println!("  {} [{}]{}{} — {}", edge.id, edge.rel, cluster, anchor, summary);
                 println!("    [{}, {}]", edge.ns, date);
                 println!();
             }
@@ -167,21 +203,9 @@ pub fn run(
             let edges_json: Vec<serde_json::Value> = page
                 .iter()
                 .map(|re| {
-                    let edge = &re.edge;
-                    let payload: serde_json::Value =
-                        serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
-                    serde_json::json!({
-                        "id": edge.id,
-                        "from": edge.from_id,
-                        "to": edge.to_id,
-                        "rel": edge.rel,
-                        "payload": payload,
-                        "ns": edge.ns,
-                        "ts": edge.ts,
-                        "score": re.score,
-                        "endorsements": re.endorsement_count,
-                        "disputes": re.dispute_count,
-                    })
+                    let anchor =
+                        super::at::edge_target_span_id(&re.edge).and_then(|id| anchor_spans.get(id));
+                    crate::output::render::edge_json(re, anchor)
                 })
                 .collect();
 

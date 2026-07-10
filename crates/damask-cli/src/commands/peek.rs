@@ -351,13 +351,7 @@ fn staleness_marker(q: &IndexQuery, edge: &EdgeRow) -> &'static str {
     let Some(span) = span else {
         return "";
     };
-    match (span.resolution.as_deref(), span.recency.as_deref()) {
-        (Some("missing"), _) => " [\u{274C} anchor code no longer exists]",
-        (Some("unresolved"), _) => " [\u{274C} anchor unresolvable]",
-        (Some("relocated"), _) => " [\u{21AA} code moved]",
-        (_, Some("file_changed")) => " [\u{26A0} file changed since recorded]",
-        _ => "",
-    }
+    crate::output::render::freshness_words(span.resolution.as_deref(), span.recency.as_deref())
 }
 
 fn render(q: &IndexQuery, edges: &[&RankedEdge], subject: Option<&str>) -> String {

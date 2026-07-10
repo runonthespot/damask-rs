@@ -11,7 +11,8 @@ use std::env;
 use crate::error::Result;
 use crate::output::Format;
 
-use super::at::{edge_target_span_id, freshness_glyph};
+use super::at::edge_target_span_id;
+use crate::output::render::freshness_glyph;
 use super::helpers;
 
 /// Maximum edges to show per section in human output.

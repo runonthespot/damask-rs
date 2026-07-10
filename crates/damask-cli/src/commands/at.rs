@@ -9,6 +9,7 @@ use std::env;
 
 use crate::error::Result;
 use crate::output::glyphs;
+use crate::output::render::{self, freshness_glyph};
 use crate::output::Format;
 
 /// Maximum edges displayed by default.
@@ -82,10 +83,8 @@ pub fn run(
                         println!("  Next: damask at {file}");
                     }
                     Format::Json => {
-                        let regions: Vec<serde_json::Value> = file_spans
-                            .iter()
-                            .map(|s| serde_json::json!({"id": s.id, "line_start": s.line_start, "line_end": s.line_end}))
-                            .collect();
+                        let regions: Vec<serde_json::Value> =
+                            file_spans.iter().map(render::span_json).collect();
                         println!(
                             "{}",
                             serde_json::json!({"spans": [], "edges": [], "mode": "in_file_fallback", "file_regions": regions, "next": format!("damask at {file}")})
@@ -370,6 +369,7 @@ pub fn run(
         Format::Json => print_json(
             &spans,
             &ranked,
+            &target_spans,
             offset,
             limit,
             count,
@@ -449,50 +449,7 @@ fn print_human(
             serde_json::from_str(&re.edge.payload).unwrap_or(serde_json::json!({}));
         let env = PayloadEnvelope::new(&payload);
 
-        // Rel glyph
-        let rel_glyph = match re.edge.rel.as_str() {
-            "risk" => "\u{26A0} ",        // ⚠
-            "gotcha" => "\u{26A0} ",      // ⚠
-            "contradicts" => "\u{2717} ", // ✗
-            "conflicts_with" => "\u{2717} ",
-            _ => "  ",
-        };
-
-        // Dispute marker
-        let dispute_marker = if re.dispute_count > 0 {
-            format!(" {}", glyphs::DISPUTED)
-        } else {
-            String::new()
-        };
-
-        // Confidence
-        let conf = env
-            .confidence()
-            .map(|c| format!(" ({:.2})", c))
-            .unwrap_or_default();
-
-        // Terminal/humble statuses are schema — the read side says so.
-        let severity_str = env
-            .severity()
-            .map(|sv| format!(" [{sv}]"))
-            .unwrap_or_default();
-        let status_str = match env.status() {
-            Some("ruled_out") => " [ruled out]",
-            Some("hypothesis") => " [hypothesis]",
-            _ => "",
-        };
-
-        // Endorsement/dispute counts
-        let endorsement_str = if re.endorsement_count > 0 {
-            format!(" \u{00D7}{}\u{2713}", re.endorsement_count)
-        } else {
-            String::new()
-        };
-        let dispute_str = if re.dispute_count > 0 {
-            format!(" \u{00D7}{}\u{2717}", re.dispute_count)
-        } else {
-            String::new()
-        };
+        let cluster = render::signal_cluster(&env, re.endorsement_count, re.dispute_count);
 
         // Summary
         let summary = env
@@ -513,15 +470,10 @@ fn print_human(
         let date = re.edge.ts.split('T').next().unwrap_or(&re.edge.ts);
 
         println!(
-            "  {}{}{}{}{}{}{}{}{} — {}",
-            rel_glyph,
+            "  {}{}{}{} — {}",
+            render::rel_glyph(&re.edge.rel),
             re.edge.rel,
-            conf,
-            severity_str,
-            status_str,
-            endorsement_str,
-            dispute_str,
-            dispute_marker,
+            cluster,
             target_suffix,
             summary,
         );
@@ -531,7 +483,9 @@ fn print_human(
             println!("    action: {}", action);
         }
 
-        println!("    [{}, {}]", re.edge.ns, date);
+        // The edge ID closes the loop: an agent that just read a claim can
+        // endorse/dispute/close it without a second lookup query.
+        println!("    [{}, {}] {}", re.edge.ns, date, re.edge.id);
         println!();
     }
 
@@ -580,21 +534,11 @@ pub(crate) fn edge_target_span_id(edge: &damask_store::index::query::EdgeRow) ->
         .or_else(|| edge.from_id.as_deref().filter(|id| id.starts_with("s_")))
 }
 
-pub(crate) fn freshness_glyph(resolution: Option<&str>, recency: Option<&str>) -> &'static str {
-    match (resolution, recency) {
-        (Some("missing"), _) => glyphs::UNRESOLVED,
-        (Some("unresolved"), _) => glyphs::UNRESOLVED,
-        (Some("relocated"), _) => glyphs::RELOCATED,
-        (_, Some("file_changed")) => glyphs::FILE_CHANGED,
-        (Some("exact"), Some("unchanged")) => glyphs::EXACT_UNCHANGED,
-        _ => "",
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn print_json(
     spans: &[damask_store::index::query::SpanRow],
     ranked: &[RankedEdge],
+    target_spans: &std::collections::HashMap<String, damask_store::index::query::SpanRow>,
     offset: usize,
     limit: usize,
     count: usize,
@@ -602,36 +546,14 @@ fn print_json(
     closed_hidden: u64,
     graph_stats: &damask_store::GraphStats,
 ) {
-    let spans_json: Vec<serde_json::Value> = spans
-        .iter()
-        .map(|s| {
-            serde_json::json!({
-                "id": s.id,
-                "path": s.path,
-                "line_start": s.line_start,
-                "line_end": s.line_end,
-                "snippet": s.snippet,
-            })
-        })
-        .collect();
+    let spans_json: Vec<serde_json::Value> =
+        spans.iter().map(render::span_json).collect();
 
     let edges_json: Vec<serde_json::Value> = ranked
         .iter()
         .map(|re| {
-            let payload: serde_json::Value =
-                serde_json::from_str(&re.edge.payload).unwrap_or(serde_json::json!({}));
-            serde_json::json!({
-                "id": re.edge.id,
-                "from": re.edge.from_id,
-                "to": re.edge.to_id,
-                "rel": re.edge.rel,
-                "payload": payload,
-                "ns": re.edge.ns,
-                "ts": re.edge.ts,
-                "score": re.score,
-                "endorsements": re.endorsement_count,
-                "disputes": re.dispute_count,
-            })
+            let anchor = edge_target_span_id(&re.edge).and_then(|id| target_spans.get(id));
+            render::edge_json(re, anchor)
         })
         .collect();
 
