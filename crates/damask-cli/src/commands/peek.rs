@@ -1,19 +1,30 @@
 //! Point-of-use context injection.
 //!
-//! One hook command, two Claude Code events:
+//! One hook command, three Claude Code events:
 //! - `PostToolUse` on Read/Edit/Write/MultiEdit/NotebookEdit — injects the
 //!   top-ranked edges for the file the agent just touched, at the exact
 //!   moment they matter.
 //! - `UserPromptSubmit` — matches the prompt's keywords against the FTS
 //!   index and injects relevant edges before exploration starts.
+//! - `Stop` — the broadcast backstop: if broadcast-flagged edges landed
+//!   during the session and were never drained by the events above (agent
+//!   was composing its final answer, no more tool calls), block the stop
+//!   once with a reconciliation ask. PostToolUse delivery is the latency
+//!   optimization; Stop delivery is the guarantee.
+//!
+//! Broadcast edges (`payload.broadcast: true`, within a 24h window) ride
+//! along on every event, repo-wide: their relevance is temporal, not
+//! spatial — "the world changed since you started."
 //!
 //! A session-scoped seen-cache (`.damask/.session/<id>.seen`) guarantees an
 //! edge is injected at most once per session, so repeated reads of the same
-//! file don't repeat context. Like all hook commands, every error path is
-//! silent exit 0 — a hook must never break a session.
+//! file don't repeat context and a delivered broadcast never blocks a stop.
+//! Like all hook commands, every error path is silent exit 0 — a hook must
+//! never break a session.
 
 use chrono::Utc;
 use damask_core::PayloadEnvelope;
+use damask_store::index::query::EdgeRow;
 use damask_store::{
     rank_edges, update_index_with_mode, DamaskProject, IndexMode, IndexQuery, RankedEdge,
     RankingInput,
@@ -32,6 +43,8 @@ const CONTEXT_TOOLS: &[&str] = &["Read", "Edit", "Write", "MultiEdit", "Notebook
 
 /// Maximum edges injected per event.
 const MAX_INJECT: usize = 3;
+/// Maximum broadcast edges appended per event.
+const MAX_BROADCAST: usize = 3;
 /// Summary truncation width.
 const SUMMARY_WIDTH: usize = 120;
 /// Candidate pool ranked before seen-filtering.
@@ -52,14 +65,17 @@ const STOPWORDS: &[&str] = &[
 enum Mode {
     File(String),
     Prompt(String),
+    Stop,
 }
 
-pub fn run(file: Option<&str>, prompt: Option<&str>, session: Option<&str>) -> Result<()> {
+pub fn run(file: Option<&str>, prompt: Option<&str>, stop: bool, session: Option<&str>) -> Result<()> {
     // Manual mode (testing) via flags; hook mode reads JSON from stdin.
     let (mode, session_id, hook_event) = if let Some(f) = file {
         (Mode::File(f.to_string()), session.map(String::from), None)
     } else if let Some(p) = prompt {
         (Mode::Prompt(p.to_string()), session.map(String::from), None)
+    } else if stop {
+        (Mode::Stop, session.map(String::from), None)
     } else {
         let mut input = String::new();
         if std::io::stdin().read_to_string(&mut input).is_err() {
@@ -95,6 +111,17 @@ pub fn run(file: Option<&str>, prompt: Option<&str>, session: Option<&str>) -> R
                 ),
                 None => return Ok(()),
             },
+            Some("Stop") => {
+                // Never block twice in a stop chain (mirrors harvest).
+                if hook
+                    .get("stop_hook_active")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    return Ok(());
+                }
+                (Mode::Stop, session_id, Some("Stop"))
+            }
             _ => return Ok(()),
         }
     };
@@ -115,6 +142,36 @@ pub fn run(file: Option<&str>, prompt: Option<&str>, session: Option<&str>) -> R
         return Ok(());
     };
     let q = IndexQuery::new(&conn);
+    let seen = load_seen(&project, session_id.as_deref());
+
+    // Broadcasts ride along on every event; unseen ones only.
+    let broadcasts: Vec<EdgeRow> = super::helpers::fresh_broadcasts(&q, Utc::now())
+        .into_iter()
+        .filter(|e| !seen.contains(&e.id))
+        .take(MAX_BROADCAST)
+        .collect();
+
+    // Stop boundary: the backstop. Anything still unseen here was recorded
+    // after the agent's last drain — block once so the final answer can
+    // reconcile against it. Delivered broadcasts are already in the
+    // seen-cache, so a well-drained session stops silently.
+    if matches!(mode, Mode::Stop) {
+        if broadcasts.is_empty() {
+            return Ok(());
+        }
+        let reason = render_stop_reason(&broadcasts);
+        let output = serde_json::json!({
+            "decision": "block",
+            "reason": reason,
+        });
+        println!("{}", serde_json::to_string(&output).unwrap());
+        record_seen(
+            &project,
+            session_id.as_deref(),
+            broadcasts.iter().map(|e| e.id.as_str()),
+        );
+        return Ok(());
+    }
 
     let (candidates, subject) = match &mode {
         Mode::File(path) => {
@@ -127,19 +184,31 @@ pub fn run(file: Option<&str>, prompt: Option<&str>, session: Option<&str>) -> R
             )
         }
         Mode::Prompt(text) => (prompt_candidates(&project, &q, &config, text), None),
+        Mode::Stop => unreachable!("handled above"),
     };
 
-    let seen = load_seen(&project, session_id.as_deref());
     let fresh: Vec<&RankedEdge> = candidates
         .iter()
         .filter(|r| !seen.contains(&r.edge.id))
         .take(MAX_INJECT)
         .collect();
-    if fresh.is_empty() {
+    let fresh_ids: HashSet<&str> = fresh.iter().map(|r| r.edge.id.as_str()).collect();
+    let broadcasts: Vec<&EdgeRow> = broadcasts
+        .iter()
+        .filter(|e| !fresh_ids.contains(e.id.as_str()))
+        .collect();
+    if fresh.is_empty() && broadcasts.is_empty() {
         return Ok(());
     }
 
-    let text = render(&q, &fresh, subject.as_deref());
+    let mut text = if fresh.is_empty() {
+        String::new()
+    } else {
+        render(&q, &fresh, subject.as_deref())
+    };
+    if !broadcasts.is_empty() {
+        text.push_str(&render_broadcasts(&broadcasts));
+    }
     match hook_event {
         Some(event) => {
             let output = serde_json::json!({
@@ -156,10 +225,61 @@ pub fn run(file: Option<&str>, prompt: Option<&str>, session: Option<&str>) -> R
     record_seen(
         &project,
         session_id.as_deref(),
-        fresh.iter().map(|r| r.edge.id.as_str()),
+        fresh
+            .iter()
+            .map(|r| r.edge.id.as_str())
+            .chain(broadcasts.iter().map(|e| e.id.as_str())),
     );
 
     Ok(())
+}
+
+/// One display line for a broadcast edge.
+fn broadcast_line(edge: &EdgeRow) -> String {
+    let payload: serde_json::Value =
+        serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+    let env = PayloadEnvelope::new(&payload);
+    let conf = env
+        .confidence()
+        .map(|c| format!(" ({c:.2})"))
+        .unwrap_or_default();
+    let summary = env
+        .summary()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| damask_core::truncate_str(&edge.payload, SUMMARY_WIDTH).to_string());
+    let trunc = damask_core::truncate_str(&summary, SUMMARY_WIDTH);
+    format!("- {}{conf}: {trunc} [{}]\n", edge.rel, edge.id)
+}
+
+/// Non-blocking broadcast section appended to file/prompt injections.
+fn render_broadcasts(edges: &[&EdgeRow]) -> String {
+    let mut text =
+        String::from("[damask] Broadcast — repo-wide notice(s) from the last 24h:\n");
+    for edge in edges {
+        text.push_str(&broadcast_line(edge));
+    }
+    text.push_str(
+        "If one affects your current work, act on it; `damask endorse <id>` confirms, `damask dispute <id>` contests.\n",
+    );
+    text
+}
+
+/// Blocking Stop-boundary ask: a reconciliation question, not a reading
+/// assignment — the agent must check the notices against its conclusions,
+/// not merely acknowledge them.
+fn render_stop_reason(edges: &[EdgeRow]) -> String {
+    let mut lines = String::new();
+    for edge in edges {
+        lines.push_str(&broadcast_line(edge));
+    }
+    format!(
+        "Damask broadcast: {} repo-wide notice(s) landed after you last checked the graph:\n\n{lines}\n\
+         Before finishing, check whether any of these change the work or conclusions of this session. \
+         If one does, address it now. If your session confirms a notice, `damask endorse <edge_id>`; \
+         if it contradicts what you found, `damask dispute <edge_id> --reason ...`. \
+         If none apply, simply finish — you will not be asked again.",
+        edges.len()
+    )
 }
 
 /// Ranked open edges relevant to the prompt. FTS keyword matching by
@@ -226,7 +346,7 @@ fn extract_keywords(prompt: &str) -> Vec<String> {
 
 /// Explicit staleness marker for an edge's anchor span. Words, not just
 /// glyphs: injected context is consumed by models that act on text.
-fn staleness_marker(q: &IndexQuery, edge: &damask_store::index::query::EdgeRow) -> &'static str {
+fn staleness_marker(q: &IndexQuery, edge: &EdgeRow) -> &'static str {
     let span = super::at::edge_target_span_id(edge).and_then(|id| q.span_by_id(id).ok().flatten());
     let Some(span) = span else {
         return "";

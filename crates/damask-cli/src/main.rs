@@ -49,6 +49,7 @@ fn main() -> anyhow::Result<()> {
             severity,
             fields,
             tags,
+            broadcast,
         } => commands::edge::run(
             &from,
             &to,
@@ -62,6 +63,7 @@ fn main() -> anyhow::Result<()> {
             severity.as_deref(),
             &fields,
             &tags,
+            broadcast,
             cli.ns.as_deref(),
             cli.format,
         ),
@@ -80,6 +82,7 @@ fn main() -> anyhow::Result<()> {
             severity,
             fields,
             tags,
+            broadcast,
             symbol,
             to,
         } => commands::record::run(
@@ -96,6 +99,7 @@ fn main() -> anyhow::Result<()> {
             severity.as_deref(),
             &fields,
             &tags,
+            broadcast,
             symbol.as_deref(),
             &to,
             cli.ns.as_deref(),
@@ -196,8 +200,9 @@ fn main() -> anyhow::Result<()> {
         Command::Peek {
             file,
             prompt,
+            stop,
             session,
-        } => commands::peek::run(file.as_deref(), prompt.as_deref(), session.as_deref()),
+        } => commands::peek::run(file.as_deref(), prompt.as_deref(), stop, session.as_deref()),
         Command::Harvest { transcript } => commands::harvest::run(transcript.as_deref()),
         Command::Status => commands::status::run(cli.format),
         Command::Lint => commands::lint::run(cli.format),

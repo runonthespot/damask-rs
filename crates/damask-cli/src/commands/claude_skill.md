@@ -19,6 +19,8 @@ The deal favours you twice. Every verified fact you inherit is exploration you d
 
 If `damask init --claude` installed hooks, the loop runs itself: a briefing at session start, relevant edges injected when you touch annotated files (`peek`, once per session each), a single Stop-hook nudge if you edited without recording. Facts are stamped with your agent/session identity automatically. Make claims mechanically verifiable when you can: a `check` shell command in the payload lets `damask verify --auto` keep them endorsed or disputed by exit code.
 
+For rare repo-wide news that concurrent sessions must not miss — "main is broken", "this approach was just invalidated" — record with `--broadcast`. For 24h it reaches every active session at its next drain point (peek injection on any file touch, or a one-shot Stop-boundary check if never drained mid-flight), regardless of what files they touch. Use it like paging someone: routine findings never warrant it. `damask close` ends a broadcast early.
+
 ## Workflow
 
 **1. Orient** — always start here:
@@ -45,7 +47,7 @@ If ck is installed, join code search with knowledge in one pipe:
 damask record src/auth.rs 42 67 risk -m "No rate limiting on login" -c 0.9 \
   --action "Add rate limiter" --symbol handle_login
 ```
-`-m` is the summary, `-c` confidence (0.0-1.0), `--severity critical|high|medium|low` is how much it MATTERS (orthogonal to confidence). Add any domain field with `--field key=value` — every payload field is then filterable (`damask where "jurisdiction=EU"`). Severity is the default convention, not core: a namespace can assert its own schema in `.damask/config.json` — `"namespaces":{"<ns>":{"schema":{"<field>":{"enum":[...],"rank":{"<value>":1.2}}}}}` — enum values are validated at write time and rank weights shape ordering. Inline JSON payloads also work; `damask help record` has the full schema.
+`-m` is the summary, `-c` confidence (0.0-1.0), `--severity critical|high|medium|low` is how much it MATTERS (orthogonal to confidence), `--broadcast` marks rare repo-wide news every active session must see (see above — use sparingly). Add any domain field with `--field key=value` — every payload field is then filterable (`damask where "jurisdiction=EU"`). Severity is the default convention, not core: a namespace can assert its own schema in `.damask/config.json` — `"namespaces":{"<ns>":{"schema":{"<field>":{"enum":[...],"rank":{"<value>":1.2}}}}}` — enum values are validated at write time and rank weights shape ordering. Inline JSON payloads also work; `damask help record` has the full schema.
 
 **4. Signal** — maintain graph quality:
 ```bash

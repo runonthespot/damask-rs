@@ -50,6 +50,17 @@ impl<'a> PayloadEnvelope<'a> {
         self.raw.get("action").and_then(|v| v.as_str())
     }
 
+    /// Broadcast flag: surface this edge to every active session at its
+    /// next drain point (peek injection / Stop reconciliation), regardless
+    /// of file relevance. Time-boxed by consumers — broadcast is news,
+    /// and stale news must not outlive its window.
+    pub fn broadcast(&self) -> bool {
+        self.raw
+            .get("broadcast")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
     /// Freeform labels for filtering.
     pub fn tags(&self) -> Option<Vec<&str>> {
         self.raw.get("tags").and_then(|v| {
@@ -103,6 +114,19 @@ mod tests {
         assert!(env.is_empty());
         assert_eq!(env.summary(), None);
         assert_eq!(env.confidence(), None);
+    }
+
+    #[test]
+    fn broadcast_flag() {
+        let on = json!({"summary": "CI is red", "broadcast": true});
+        assert!(PayloadEnvelope::new(&on).broadcast());
+        let off = json!({"summary": "quiet note", "broadcast": false});
+        assert!(!PayloadEnvelope::new(&off).broadcast());
+        let absent = json!({"summary": "quiet note"});
+        assert!(!PayloadEnvelope::new(&absent).broadcast());
+        // Non-boolean values don't count as broadcast.
+        let junk = json!({"broadcast": "yes"});
+        assert!(!PayloadEnvelope::new(&junk).broadcast());
     }
 
     #[test]

@@ -394,6 +394,9 @@ fn scaffold_claude(root: &Path) -> Result<()> {
         PEEK_HOOK_COMMAND,
         PEEK_HOOK_KEY,
     )?;
+    // Broadcast backstop: peek's Stop branch blocks once if a broadcast
+    // edge landed during the session and was never drained mid-flight.
+    changed |= ensure_hook(&mut doc, "Stop", None, PEEK_HOOK_COMMAND, PEEK_HOOK_KEY)?;
     changed |= ensure_hook(
         &mut doc,
         "UserPromptSubmit",
@@ -411,7 +414,7 @@ fn scaffold_claude(root: &Path) -> Result<()> {
 
     println!();
     println!("Claude Code skill synced. Use /damask in Claude Code to get started.");
-    println!("Hooks installed: briefing on session start, peek context on file touch/prompt, harvest nudge on stop.");
+    println!("Hooks installed: briefing on session start, peek context on file touch/prompt, harvest nudge + broadcast backstop on stop.");
     if crate::ck::ck_available() {
         println!("ck detected — semantic knowledge search enabled (`damask search --sem`, `ck --jsonl | damask enrich`).");
     } else {

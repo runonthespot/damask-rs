@@ -500,6 +500,7 @@ pub fn compose_payload(
     severity: Option<&str>,
     fields: &[String],
     tags: &[String],
+    broadcast: bool,
 ) -> Result<serde_json::Value> {
     let mut value = resolve_payload(inline, file, stdin).map_err(|e| {
         if inline.is_some() {
@@ -517,7 +518,8 @@ pub fn compose_payload(
         || action.is_some()
         || severity.is_some()
         || !fields.is_empty()
-        || !tags.is_empty();
+        || !tags.is_empty()
+        || broadcast;
     if has_flags {
         let Some(obj) = value.as_object_mut() else {
             bail!("payload must be a JSON object to combine with -m/-c/--action/--tag flags");
@@ -550,10 +552,50 @@ pub fn compose_payload(
         if !tags.is_empty() {
             obj.insert("tags".to_string(), serde_json::json!(tags));
         }
+        if broadcast {
+            obj.insert("broadcast".to_string(), serde_json::json!(true));
+        }
     }
 
     validate_payload(&value)?;
     Ok(value)
+}
+
+/// How long a broadcast edge stays "news". Past this window it reverts to
+/// ordinary ranked knowledge — a broadcast is an announcement, and stale
+/// announcements injected repo-wide would be quiet rot's louder cousin.
+pub const BROADCAST_TTL_HOURS: i64 = 24;
+
+/// Active, open, broadcast-flagged edges recorded within the TTL window,
+/// newest first. Repo-wide by design: broadcasts cross namespaces — their
+/// relevance is temporal ("the world just changed"), not spatial.
+pub fn fresh_broadcasts(q: &IndexQuery, now: chrono::DateTime<chrono::Utc>) -> Vec<EdgeRow> {
+    let Ok(edges) = q.all_active_open_edges() else {
+        return Vec::new();
+    };
+    let mut hits: Vec<EdgeRow> = edges
+        .into_iter()
+        .filter(|e| {
+            // Cheap prefilter before parsing: almost no payload mentions broadcast.
+            if !e.payload.contains("\"broadcast\"") {
+                return false;
+            }
+            let Ok(payload) = serde_json::from_str::<serde_json::Value>(&e.payload) else {
+                return false;
+            };
+            if !PayloadEnvelope::new(&payload).broadcast() {
+                return false;
+            }
+            // Clock skew tolerance: a slightly future-dated ts still counts
+            // as fresh — only age beyond the TTL expires a broadcast.
+            chrono::DateTime::parse_from_rfc3339(&e.ts).is_ok_and(|ts| {
+                let age = now.signed_duration_since(ts.with_timezone(&chrono::Utc));
+                age <= chrono::Duration::hours(BROADCAST_TTL_HOURS)
+            })
+        })
+        .collect();
+    hits.sort_by(|a, b| b.ts.cmp(&a.ts));
+    hits
 }
 
 /// Resolve the payload from inline JSON, a file, stdin, or default to empty object.

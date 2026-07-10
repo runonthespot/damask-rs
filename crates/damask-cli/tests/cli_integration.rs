@@ -1605,11 +1605,18 @@ fn init_claude_installs_hooks() {
         briefing.contains("Install the damask CLI"),
         "SessionStart fallback should advertise how to install"
     );
-    let stop = hook_command(&doc, "Stop");
-    assert!(stop.contains("damask harvest"));
+    // Stop carries two entries: harvest (outbound: record what you learned)
+    // and peek (inbound: reconcile against broadcasts you haven't seen).
+    let stop_entries = doc["hooks"]["Stop"].as_array().unwrap();
+    let stop_commands: Vec<&str> = stop_entries
+        .iter()
+        .map(|e| e["hooks"][0]["command"].as_str().unwrap())
+        .collect();
+    assert!(stop_commands.iter().any(|c| c.contains("damask harvest")));
+    assert!(stop_commands.iter().any(|c| c.contains("damask peek")));
     assert!(
-        stop.contains("command -v damask"),
-        "Stop hook must be guarded"
+        stop_commands.iter().all(|c| c.contains("command -v damask")),
+        "Stop hooks must be guarded"
     );
     let post_tool_entries = doc["hooks"]["PostToolUse"].as_array().unwrap();
     let post_tool = hook_command(&doc, "PostToolUse");
@@ -1635,7 +1642,7 @@ fn init_claude_installs_hooks() {
     let settings = fs::read_to_string(dir.path().join(".claude/settings.json")).unwrap();
     let doc: serde_json::Value = serde_json::from_str(&settings).unwrap();
     assert_eq!(doc["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
-    assert_eq!(doc["hooks"]["Stop"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["hooks"]["Stop"].as_array().unwrap().len(), 2);
     assert_eq!(doc["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
     assert_eq!(
         doc["hooks"]["UserPromptSubmit"].as_array().unwrap().len(),
@@ -2521,10 +2528,23 @@ fn init_claude_upgrades_unguarded_hooks_in_place() {
         "existing matcher must be preserved"
     );
 
+    // The pre-existing harvest entry is upgraded in place (not duplicated);
+    // the peek broadcast backstop is added alongside it.
     let stop = doc["hooks"]["Stop"].as_array().unwrap();
-    assert_eq!(stop.len(), 1);
-    let cmd = stop[0]["hooks"][0]["command"].as_str().unwrap();
-    assert!(cmd.contains("command -v damask") && cmd.contains("damask harvest"));
+    assert_eq!(stop.len(), 2);
+    let commands: Vec<&str> = stop
+        .iter()
+        .map(|e| e["hooks"][0]["command"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|c| c.contains("damask harvest"))
+            .count(),
+        1
+    );
+    assert!(commands.iter().any(|c| c.contains("damask peek")));
+    assert!(commands.iter().all(|c| c.contains("command -v damask")));
 }
 
 #[test]
@@ -2828,6 +2848,200 @@ fn peek_ignores_non_file_tools_and_fails_open() {
         .arg("peek")
         .current_dir(dir.path())
         .write_stdin("garbage")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn record_broadcast_flag_sets_payload_field() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    let output = damask()
+        .args([
+            "--format",
+            "json",
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "note",
+            "-m",
+            "CI is red on main",
+            "--broadcast",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let facts: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let edge = facts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rel"] == "note")
+        .expect("edge fact in output");
+    assert_eq!(edge["payload"]["broadcast"], true);
+}
+
+#[test]
+fn broadcast_rides_on_peek_and_stop_blocks_only_unseen() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    damask()
+        .args(["record", "a.rs", "1", "1", "risk", "-m", "local finding"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Repo-wide announcement, no file anchor needed.
+    damask()
+        .args(["edge", "_", "_", "note", "-m", "URGENT: main is broken", "--broadcast"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // File-touch drain: broadcast rides along even though the touched file
+    // is unrelated to the announcement.
+    damask()
+        .args(["peek", "--file", "a.rs", "--session", "s1"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("local finding"))
+        .stdout(predicate::str::contains("Broadcast"))
+        .stdout(predicate::str::contains("URGENT: main is broken"));
+
+    // Session that drained mid-flight stops silently — the backstop only
+    // fires for what was never delivered.
+    damask()
+        .args(["peek", "--stop", "--session", "s1"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    // A session that never drained gets blocked once at the stop boundary…
+    let output = damask()
+        .args(["peek", "--stop", "--session", "s2"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(doc["decision"], "block");
+    assert!(doc["reason"]
+        .as_str()
+        .unwrap()
+        .contains("URGENT: main is broken"));
+
+    // …and only once: blocking marks the broadcast seen.
+    damask()
+        .args(["peek", "--stop", "--session", "s2"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    // A file with no annotations still delivers pending broadcasts.
+    fs::write(dir.path().join("c.rs"), "fn c() {}\n").unwrap();
+    damask()
+        .args(["peek", "--file", "c.rs", "--session", "s3"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("URGENT: main is broken"));
+}
+
+#[test]
+fn peek_stop_hook_event_blocks_and_respects_stop_hook_active() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    damask()
+        .args(["edge", "_", "_", "note", "-m", "schema migrated", "--broadcast"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let hook_input = serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "sx",
+    })
+    .to_string();
+    let output = damask()
+        .arg("peek")
+        .current_dir(dir.path())
+        .write_stdin(hook_input)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(doc["decision"], "block");
+    assert!(doc["reason"].as_str().unwrap().contains("schema migrated"));
+
+    // Inside a stop chain that already blocked, peek must pass through —
+    // never block twice (mirrors harvest).
+    let chained = serde_json::json!({
+        "hook_event_name": "Stop",
+        "session_id": "sy",
+        "stop_hook_active": true,
+    })
+    .to_string();
+    damask()
+        .arg("peek")
+        .current_dir(dir.path())
+        .write_stdin(chained)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn expired_broadcasts_do_not_block_stop() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    // Seed the namespace log, then append a broadcast well past the 24h
+    // window directly to the JSONL (append-only source of truth).
+    damask()
+        .args(["edge", "_", "_", "note", "-m", "ordinary note"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    let stale = serde_json::json!({
+        "t": "edge",
+        "id": "e_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "from": null,
+        "to": null,
+        "rel": "note",
+        "payload": {"summary": "old news", "broadcast": true},
+        "ns": "test",
+        "ts": "2020-01-01T00:00:00Z",
+    });
+    let edges_file = dir.path().join(".damask/edges/test.jsonl");
+    let mut log = fs::read_to_string(&edges_file).unwrap();
+    log.push_str(&format!("{stale}\n"));
+    fs::write(&edges_file, log).unwrap();
+
+    // Broadcast is news: past its window it must not interrupt anyone.
+    damask()
+        .args(["peek", "--stop", "--session", "s1"])
+        .current_dir(dir.path())
         .assert()
         .success()
         .stdout(predicate::str::is_empty());

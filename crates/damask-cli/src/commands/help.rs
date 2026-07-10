@@ -98,6 +98,13 @@ Always include `summary` and `confidence`. Add more fields to make findings acti
 - **action**: Be specific: "Add `if token.exp < now()` check at line 155" not "fix this"
 - **tags**: Lowercase, hyphenated. Used for `damask where "tags=security"`
 - **evidence**: IDs of spans or edges that support this finding
+- **broadcast**: `true` (or the `--broadcast` flag) — repo-wide announcement.
+  For 24h, every active session sees it at its next drain point (peek
+  injection on file touch/prompt; a one-shot Stop-boundary reconciliation if
+  never drained mid-flight), regardless of file relevance. For rare news
+  that changes what concurrent agents should do ("main is broken", "the
+  auth approach is wrong") — not routine findings. `damask close` ends a
+  broadcast early.
 
 **Extended fields** (stored in payload, invaluable for future agents):
 - **reasoning**: Your analytical chain — what you looked at, why you reached this conclusion

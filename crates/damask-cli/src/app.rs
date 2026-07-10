@@ -140,6 +140,12 @@ pub enum Command {
         /// Payload tag (repeatable).
         #[arg(long = "tag")]
         tags: Vec<String>,
+
+        /// Mark as a broadcast: surfaced to every active session at its
+        /// next drain point (peek / stop) for 24h, regardless of file
+        /// relevance. For rare repo-wide news, not routine findings.
+        #[arg(long)]
+        broadcast: bool,
     },
 
     /// Create a span and edge in one shot.
@@ -192,6 +198,12 @@ pub enum Command {
         /// Payload tag (repeatable).
         #[arg(long = "tag")]
         tags: Vec<String>,
+
+        /// Mark as a broadcast: surfaced to every active session at its
+        /// next drain point (peek / stop) for 24h, regardless of file
+        /// relevance. For rare repo-wide news, not routine findings.
+        #[arg(long)]
+        broadcast: bool,
 
         /// Symbol anchor (function name, section heading).
         #[arg(long)]
@@ -426,6 +438,11 @@ pub enum Command {
         /// Inject context for a prompt (testing).
         #[arg(long)]
         prompt: Option<String>,
+
+        /// Run the Stop-boundary broadcast check (testing; default: read
+        /// hook JSON from stdin).
+        #[arg(long, conflicts_with_all = ["file", "prompt"])]
+        stop: bool,
 
         /// Session ID for the seen-cache (testing).
         #[arg(long)]

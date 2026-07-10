@@ -21,6 +21,7 @@ pub fn run(
     severity: Option<&str>,
     fields: &[String],
     tags: &[String],
+    broadcast: bool,
     ns_override: Option<&str>,
     format: Format,
 ) -> Result<()> {
@@ -44,6 +45,7 @@ pub fn run(
         severity,
         fields,
         tags,
+        broadcast,
     )?;
 
     // Namespace schemas assert domain vocabulary — validate before writing.

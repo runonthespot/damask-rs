@@ -32,7 +32,7 @@ damask follow <span_id>             # traverse edge graph
 damask record src/auth.rs 42 67 risk -m "No rate limiting on login" -c 0.9 \
   --action "Add rate limiter" --symbol handle_login
 ```
-`-m` is the summary, `-c` confidence (0.0-1.0), `--severity critical|high|medium|low` is how much it MATTERS (orthogonal to confidence). Add any domain field with `--field key=value` — every payload field is then filterable (`damask where "jurisdiction=EU"`). Severity is the default convention, not core: a namespace can assert its own schema in `.damask/config.json` — `"namespaces":{"<ns>":{"schema":{"<field>":{"enum":[...],"rank":{"<value>":1.2}}}}}` — enum values are validated at write time and rank weights shape ordering. Inline JSON payloads also work; `damask help record` has the full schema.
+`-m` is the summary, `-c` confidence (0.0-1.0), `--severity critical|high|medium|low` is how much it MATTERS (orthogonal to confidence). `--broadcast` marks rare repo-wide news: for 24h, hook-enabled sessions (Claude Code) receive it at their next drain point regardless of file relevance — use it like paging someone. Add any domain field with `--field key=value` — every payload field is then filterable (`damask where "jurisdiction=EU"`). Severity is the default convention, not core: a namespace can assert its own schema in `.damask/config.json` — `"namespaces":{"<ns>":{"schema":{"<field>":{"enum":[...],"rank":{"<value>":1.2}}}}}` — enum values are validated at write time and rank weights shape ordering. Inline JSON payloads also work; `damask help record` has the full schema.
 
 **4. Signal** — maintain graph quality:
 ```bash
