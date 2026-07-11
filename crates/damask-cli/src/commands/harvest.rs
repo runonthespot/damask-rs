@@ -25,11 +25,17 @@ const EDIT_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
 /// Damask subcommands that count as recording knowledge.
 const WRITE_SUBCOMMANDS: &[&str] = &[
-    "record", "edge", "span", "batch", "endorse", "dispute", "close",
+    "record", "edge", "span", "batch", "endorse", "dispute", "close", "confirm",
 ];
+
+/// Damask subcommands that signal on EXISTING edges — the gardening verbs.
+const SIGNAL_SUBCOMMANDS: &[&str] = &["endorse", "dispute", "close", "confirm"];
 
 /// Maximum edited files listed in the nudge.
 const MAX_FILES_IN_REASON: usize = 10;
+
+/// Maximum open findings listed in the reconcile nudge.
+const MAX_FINDINGS_IN_RECONCILE: usize = 8;
 
 #[derive(Default)]
 struct SessionActivity {
@@ -37,6 +43,8 @@ struct SessionActivity {
     edited_files: Vec<String>,
     /// True if the session ran any damask write command.
     recorded: bool,
+    /// True if the session signalled on existing edges (endorse/dispute/close/confirm).
+    signalled: bool,
     /// Earliest transcript timestamp (ISO-8601 UTC) — the session window start.
     window_start: Option<String>,
 }
@@ -78,9 +86,28 @@ pub fn run(transcript_override: Option<&str>) -> Result<()> {
         return Ok(());
     };
 
-    // Findings were recorded: shift from quantity to quality — lint what
-    // this session wrote and nudge once if anything is seriously deficient.
+    // Findings were recorded: shift from quantity to quality.
     if activity.recorded {
+        // Inbound gate first (field-driven): a session that edits annotated
+        // files and never signals is the fix-without-close leak — the fix
+        // that resolves a finding usually refactors away its anchor, and
+        // the edge then rots open forever. One reconciliation ask.
+        if !activity.signalled {
+            if let Some(reason) = reconcile_reason(
+                &project,
+                &activity.edited_files,
+                activity.window_start.as_deref(),
+            ) {
+                let output = serde_json::json!({
+                    "decision": "block",
+                    "reason": reason,
+                });
+                println!("{}", serde_json::to_string(&output).unwrap());
+                return Ok(());
+            }
+        }
+        // Then quality: lint what this session wrote and nudge once if
+        // anything is seriously deficient.
         if let Some(reason) = quality_reason(&project, activity.window_start.as_deref()) {
             let output = serde_json::json!({
                 "decision": "block",
@@ -114,11 +141,20 @@ pub fn run(transcript_override: Option<&str>) -> Result<()> {
 /// literal text "damask record" misses real recordings. A false positive
 /// merely skips the nudge, so loose matching errs the right way.
 fn is_damask_write(cmd: &str) -> bool {
+    invokes_damask_with(cmd, WRITE_SUBCOMMANDS)
+}
+
+/// True if a shell command signals on existing edges (gardening verbs).
+fn is_damask_signal(cmd: &str) -> bool {
+    invokes_damask_with(cmd, SIGNAL_SUBCOMMANDS)
+}
+
+fn invokes_damask_with(cmd: &str, subcommands: &[&str]) -> bool {
     let tokens: Vec<&str> = cmd.split_whitespace().collect();
     let invokes_damask = tokens
         .iter()
         .any(|t| *t == "damask" || t.ends_with("/damask"));
-    invokes_damask && tokens.iter().any(|t| WRITE_SUBCOMMANDS.contains(t))
+    invokes_damask && tokens.iter().any(|t| subcommands.contains(t))
 }
 
 /// Parse a Claude Code transcript (JSONL) for file edits and damask writes.
@@ -166,6 +202,9 @@ fn scan_transcript(transcript_path: &Path, root: &Path) -> Option<SessionActivit
                     .unwrap_or("");
                 if is_damask_write(cmd) {
                     activity.recorded = true;
+                }
+                if is_damask_signal(cmd) {
+                    activity.signalled = true;
                 }
             }
         }
@@ -233,6 +272,79 @@ fn quality_reason(project: &DamaskProject, window_start: Option<&str>) -> Option
          Low-quality edges rank poorly and waste future agents' attention. \
          If you believe these are fine as-is, simply finish — you will not be asked again.",
         issues.len()
+    ))
+}
+
+/// Open findings anchored to files this session edited, when the session
+/// never signalled. Only findings that PRE-DATE the session count — a
+/// session must not be nudged to reconcile the edges it just recorded.
+/// Returns None (stop allowed) when the edited files carry no open
+/// pre-existing edges or on any error.
+fn reconcile_reason(
+    project: &DamaskProject,
+    edited_files: &[String],
+    window_start: Option<&str>,
+) -> Option<String> {
+    if edited_files.is_empty() {
+        return None;
+    }
+    let window_start = window_start?;
+    let db_path = project.damask_dir.join("index.db");
+    let edges_dir = project.damask_dir.join("edges");
+    let conn = update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred).ok()?;
+    let q = IndexQuery::new(&conn);
+
+    // (file, edge_id, rel, summary) for open edges on edited files.
+    let mut findings: Vec<(String, String, String, String)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for file in edited_files {
+        for span in q.spans_for_file(file).ok()? {
+            for edge in q.edges_for_span_open(&span.id).ok()? {
+                // ISO-8601 UTC timestamps compare lexicographically.
+                if edge.ts.as_str() >= window_start || !seen.insert(edge.id.clone()) {
+                    continue;
+                }
+                let payload: serde_json::Value =
+                    serde_json::from_str(&edge.payload).unwrap_or(serde_json::json!({}));
+                let summary = damask_core::PayloadEnvelope::new(&payload)
+                    .summary()
+                    .unwrap_or("")
+                    .to_string();
+                findings.push((
+                    file.clone(),
+                    edge.id,
+                    edge.rel,
+                    damask_core::truncate_str(&summary, 90).to_string(),
+                ));
+            }
+        }
+    }
+    if findings.is_empty() {
+        return None;
+    }
+
+    let total = findings.len();
+    let mut lines = String::new();
+    for (file, id, rel, summary) in findings.into_iter().take(MAX_FINDINGS_IN_RECONCILE) {
+        lines.push_str(&format!("- {id} [{rel}] on {file} — {summary}\n"));
+    }
+    if total > MAX_FINDINGS_IN_RECONCILE {
+        lines.push_str(&format!(
+            "- … and {} more (`damask at <file>`)\n",
+            total - MAX_FINDINGS_IN_RECONCILE
+        ));
+    }
+
+    Some(format!(
+        "Damask harvest: you edited files that carry {total} open finding(s), and this session \
+         never signalled on any edge:\n\n{lines}\n\
+         Did your changes resolve, confirm, or contradict any of these?\n\
+         - Fixed/obsolete: `damask close <edge_id> --reason resolved`\n\
+         - Still true of the new code: `damask endorse <edge_id>` (or `damask confirm <span_id>` if the anchor drifted)\n\
+         - Wrong: `damask dispute <edge_id> --reason ...`\n\n\
+         Unclosed findings on refactored code rot open forever — this is the #1 source of stale \
+         knowledge in production graphs. If none of these were affected by your changes, simply \
+         finish — you will not be asked again."
     ))
 }
 

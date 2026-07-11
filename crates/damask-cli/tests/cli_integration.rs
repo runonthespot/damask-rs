@@ -3742,6 +3742,260 @@ fn transcript_tool_use(name: &str, input: serde_json::Value) -> String {
     .to_string()
 }
 
+/// Transcript line with an explicit timestamp — the session window start
+/// is derived from the earliest one.
+fn transcript_tool_use_at(ts: &str, name: &str, input: serde_json::Value) -> String {
+    serde_json::json!({
+        "type": "assistant",
+        "timestamp": ts,
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "name": name, "input": input}]
+        }
+    })
+    .to_string()
+}
+
+/// Record one finding on `file` and return its edge id.
+fn record_finding(dir: &TempDir, file: &str, summary: &str) -> String {
+    let out = damask()
+        .args([
+            "--format", "json", "record", file, "1", "1", "risk", "-m", summary, "-c", "0.9",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let facts: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    facts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rel"] == "risk")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn harvest_reconcile_nudges_unsignalled_session_over_open_findings() {
+    // The fix-without-close leak: a session edits a file carrying an open
+    // finding, records its own new knowledge, but never signals on the
+    // pre-existing edge — one reconciliation ask at the stop boundary.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    let root = dir.path().canonicalize().unwrap();
+    fs::write(root.join("auth.rs"), "fn validate() {}\n").unwrap();
+    let edge_id = record_finding(&dir, "auth.rs", "no rate limiting on login");
+
+    // Session window starts AFTER the finding exists.
+    let transcript = root.join("transcript.jsonl");
+    fs::write(
+        &transcript,
+        [
+            transcript_tool_use_at(
+                "2099-01-01T00:00:00Z",
+                "Edit",
+                serde_json::json!({"file_path": root.join("auth.rs").to_string_lossy()}),
+            ),
+            transcript_tool_use_at(
+                "2099-01-01T00:01:00Z",
+                "Bash",
+                serde_json::json!({"command": "damask record auth.rs 1 1 note -m 'new detail'"}),
+            ),
+        ]
+        .join("\n")
+            + "\n",
+    )
+    .unwrap();
+
+    let output = damask()
+        .args(["harvest", "--transcript", &transcript.to_string_lossy()])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(doc["decision"], "block");
+    let reason = doc["reason"].as_str().unwrap();
+    assert!(reason.contains(&edge_id), "must name the open finding");
+    assert!(reason.contains("open finding"));
+    assert!(reason.contains("damask close"));
+}
+
+#[test]
+fn harvest_reconcile_passes_sessions_that_signalled() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    let root = dir.path().canonicalize().unwrap();
+    fs::write(root.join("auth.rs"), "fn validate() {}\n").unwrap();
+    let edge_id = record_finding(&dir, "auth.rs", "no rate limiting on login");
+
+    // Same shape, but the session closed the finding — gardening happened.
+    let transcript = root.join("transcript.jsonl");
+    fs::write(
+        &transcript,
+        [
+            transcript_tool_use_at(
+                "2099-01-01T00:00:00Z",
+                "Edit",
+                serde_json::json!({"file_path": root.join("auth.rs").to_string_lossy()}),
+            ),
+            transcript_tool_use_at(
+                "2099-01-01T00:01:00Z",
+                "Bash",
+                serde_json::json!({"command": format!("damask close {edge_id} --reason resolved")}),
+            ),
+        ]
+        .join("\n")
+            + "\n",
+    )
+    .unwrap();
+
+    damask()
+        .args(["harvest", "--transcript", &transcript.to_string_lossy()])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn harvest_reconcile_ignores_findings_recorded_by_the_session_itself() {
+    // A session must not be nudged to reconcile the edges it just wrote:
+    // the only finding on the file lands INSIDE the session window.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    let root = dir.path().canonicalize().unwrap();
+    fs::write(root.join("auth.rs"), "fn validate() {}\n").unwrap();
+    record_finding(&dir, "auth.rs", "recorded during this very session");
+
+    // Window starts long before the edge's timestamp.
+    let transcript = root.join("transcript.jsonl");
+    fs::write(
+        &transcript,
+        [
+            transcript_tool_use_at(
+                "2000-01-01T00:00:00Z",
+                "Edit",
+                serde_json::json!({"file_path": root.join("auth.rs").to_string_lossy()}),
+            ),
+            transcript_tool_use_at(
+                "2000-01-01T00:01:00Z",
+                "Bash",
+                serde_json::json!({"command": "damask record auth.rs 1 1 risk -m 'recorded during this very session' -c 0.9"}),
+            ),
+        ]
+        .join("\n")
+            + "\n",
+    )
+    .unwrap();
+
+    damask()
+        .args(["harvest", "--transcript", &transcript.to_string_lossy()])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn triage_treats_reasoned_unanswered_dispute_as_refuted() {
+    // Field behavior: disputes are rare but thorough. One substantive
+    // dispute, unanswered for 14+ days with zero endorsements, must reach
+    // triage's refuted list — a count-3 threshold never fires in practice.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::write(dir.path().join("auth.rs"), "fn validate() {}\n").unwrap();
+    let edge_id = record_finding(&dir, "auth.rs", "claimed race condition in login");
+
+    let stale_dispute = serde_json::json!({
+        "t": "edge",
+        "id": "e_01ARZ3NDEKTSV4RRFFQ69G5FA0",
+        "from": edge_id,
+        "to": null,
+        "rel": "disputed",
+        "payload": {"summary": "refuted with line-level reasoning: the guard at auth.rs:1 makes this race impossible"},
+        "ns": "test",
+        "ts": "2020-01-01T00:00:00Z",
+    });
+    let edges_file = dir.path().join(".damask/edges/test.jsonl");
+    let mut log = fs::read_to_string(&edges_file).unwrap();
+    log.push_str(&format!("{stale_dispute}\n"));
+    fs::write(&edges_file, log).unwrap();
+
+    damask()
+        .arg("triage")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Refuted (1"))
+        .stdout(predicate::str::contains(&edge_id));
+
+    damask()
+        .args(["triage", "--close-refuted"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Closed 1 refuted edges."));
+}
+
+#[test]
+fn triage_ignores_driveby_and_fresh_disputes() {
+    // A short drive-by reason (even aged) and a reasoned-but-fresh dispute
+    // must both stay off the refuted list.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+    fs::write(dir.path().join("b.rs"), "fn b() {}\n").unwrap();
+    let aged_target = record_finding(&dir, "a.rs", "claim with a drive-by dispute");
+    let fresh_target = record_finding(&dir, "b.rs", "claim with a fresh reasoned dispute");
+
+    let driveby = serde_json::json!({
+        "t": "edge",
+        "id": "e_01ARZ3NDEKTSV4RRFFQ69G5FA1",
+        "from": aged_target,
+        "to": null,
+        "rel": "disputed",
+        "payload": {"summary": "wrong"},
+        "ns": "test",
+        "ts": "2020-01-01T00:00:00Z",
+    });
+    let edges_file = dir.path().join(".damask/edges/test.jsonl");
+    let mut log = fs::read_to_string(&edges_file).unwrap();
+    log.push_str(&format!("{driveby}\n"));
+    fs::write(&edges_file, log).unwrap();
+
+    // Fresh reasoned dispute via the CLI (timestamped now).
+    damask()
+        .args([
+            "dispute",
+            &fresh_target,
+            "--reason",
+            "detailed and substantive reasoning that easily exceeds the drive-by threshold",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    damask()
+        .arg("triage")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No rot found"));
+}
+
 #[test]
 fn harvest_blocks_when_edits_unrecorded() {
     let dir = TempDir::new().unwrap();

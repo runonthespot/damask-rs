@@ -20,6 +20,13 @@ use super::at::edge_target_span_id;
 
 /// Disputes at or above this, with zero endorsements, mark an edge refuted.
 const REFUTED_MIN_DISPUTES: u32 = 3;
+/// A single reasoned dispute also refutes, once it has stood unanswered
+/// this long. Field data: production graphs see one thorough,
+/// adversarially-verified refutation, not three drive-bys — a count-only
+/// threshold never fires where it matters most.
+const REASONED_DISPUTE_MIN_AGE_DAYS: i64 = 14;
+/// A dispute reason shorter than this is a drive-by, not a refutation.
+const REASONED_DISPUTE_MIN_CHARS: usize = 40;
 
 struct RotEdge {
     edge_id: String,
@@ -44,6 +51,7 @@ pub fn run(
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     let q = IndexQuery::new(&conn);
 
+    let now = chrono::Utc::now();
     let open_edges = q
         .all_active_open_edges()
         .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -91,7 +99,11 @@ pub fn run(
         }
         let disputes = dispute_counts.get(&edge.id).copied().unwrap_or(0);
         let endorsements = endorse_counts.get(&edge.id).copied().unwrap_or(0);
-        if disputes >= REFUTED_MIN_DISPUTES && endorsements == 0 {
+        if endorsements == 0
+            && disputes > 0
+            && (disputes >= REFUTED_MIN_DISPUTES
+                || has_reasoned_unanswered_dispute(&q, &edge.id, now))
+        {
             refuted.push(RotEdge {
                 edge_id: edge.id.clone(),
                 ns: edge.ns.clone(),
@@ -143,14 +155,12 @@ pub fn run(
         let matched: Vec<&RotEdge> = refuted.iter().collect();
         if matched.is_empty() {
             println!(
-                "Nothing to close: no open edges with >= {REFUTED_MIN_DISPUTES} disputes and zero endorsements."
+                "Nothing to close: no open edges are refuted (repeatedly disputed, or a reasoned dispute unanswered >= {REASONED_DISPUTE_MIN_AGE_DAYS} days, with zero endorsements)."
             );
             return Ok(());
         }
         let n = write_closes(&project, &matched, |_| {
-            format!(
-                "Closed by triage — refuted: >= {REFUTED_MIN_DISPUTES} disputes, zero endorsements"
-            )
+            "Closed by triage — refuted: disputed with zero endorsements (repeated disputes, or a reasoned dispute left unanswered)".to_string()
         })?;
         println!("Closed {n} refuted edges.");
         return Ok(());
@@ -208,7 +218,7 @@ pub fn run(
             if !refuted.is_empty() {
                 println!();
                 println!(
-                    "  Refuted ({} edges with >= {REFUTED_MIN_DISPUTES} disputes, zero endorsements):",
+                    "  Refuted ({} edges: disputed, never endorsed — repeated disputes or a reasoned dispute unanswered >= {REASONED_DISPUTE_MIN_AGE_DAYS} days):",
                     refuted.len()
                 );
                 for r in refuted.iter().take(5) {
@@ -247,6 +257,32 @@ pub fn run(
     }
 
     Ok(())
+}
+
+/// True if the edge carries at least one dispute that is both substantive
+/// (a real reason, not a drive-by) and old enough that a defence would
+/// have appeared by now. Only called for open edges with zero
+/// endorsements, so "unanswered" is already established by the caller.
+fn has_reasoned_unanswered_dispute(
+    q: &IndexQuery,
+    edge_id: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    let Ok(signals) = q.edges_targeting(edge_id) else {
+        return false;
+    };
+    signals.iter().filter(|s| s.rel == "disputed").any(|d| {
+        let payload: serde_json::Value =
+            serde_json::from_str(&d.payload).unwrap_or(serde_json::json!({}));
+        let reasoned = damask_core::PayloadEnvelope::new(&payload)
+            .summary()
+            .is_some_and(|s| s.trim().len() >= REASONED_DISPUTE_MIN_CHARS);
+        let aged = chrono::DateTime::parse_from_rfc3339(&d.ts).is_ok_and(|ts| {
+            now.signed_duration_since(ts.with_timezone(&chrono::Utc))
+                >= chrono::Duration::days(REASONED_DISPUTE_MIN_AGE_DAYS)
+        });
+        reasoned && aged
+    })
 }
 
 /// Write `closed` meta-edges into each target edge's OWN namespace —
