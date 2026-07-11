@@ -146,12 +146,34 @@ pub fn ambient_agent() -> Option<String> {
     std::env::var("DAMASK_AGENT")
         .ok()
         .filter(|s| !s.is_empty())
+        // Generic harness identifier: agent runners export AI_AGENT (e.g.
+        // "claude-code_2-1-207_agent", "codex_..."). Field data showed a
+        // repo worked by two frontier models where one harness (Codex) left
+        // 99/122 same-day edges as agent=none — it sets neither DAMASK_AGENT
+        // nor the CLAUDE* vars, but it does set AI_AGENT. Parse the harness
+        // name from it so every edge is attributable regardless of runner.
+        .or_else(|| {
+            std::env::var("AI_AGENT")
+                .ok()
+                .as_deref()
+                .and_then(harness_from_ai_agent)
+                .map(String::from)
+        })
         .or_else(|| {
             let in_claude = std::env::var("CLAUDECODE").is_ok()
                 || std::env::var("CLAUDE_CODE_SESSION_ID").is_ok()
                 || std::env::var("CLAUDE_SESSION_ID").is_ok();
             in_claude.then(|| "claude-code".to_string())
         })
+}
+
+/// Extract the harness name from an `AI_AGENT` value. The convention is
+/// `<name>_<version>_agent` where the name may contain hyphens
+/// ("claude-code_2-1-207_agent" → "claude-code"); a bare token with no
+/// separators is taken whole ("codex" → "codex"). Empty input yields None.
+fn harness_from_ai_agent(raw: &str) -> Option<&str> {
+    let name = raw.split('_').next().unwrap_or("").trim();
+    (!name.is_empty()).then_some(name)
 }
 
 /// Ambient session identity for provenance stamping. `DAMASK_SESSION` wins;
@@ -703,5 +725,25 @@ pub fn build_edge(
         ts: chrono::Utc::now(),
         agent: ambient_agent(),
         session: ambient_session(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn harness_name_parsed_from_ai_agent() {
+        // Real observed value: name carries hyphens, version + suffix follow.
+        assert_eq!(
+            harness_from_ai_agent("claude-code_2-1-207_agent"),
+            Some("claude-code")
+        );
+        // Codex-style and bare tokens.
+        assert_eq!(harness_from_ai_agent("codex_1-0-0_agent"), Some("codex"));
+        assert_eq!(harness_from_ai_agent("codex"), Some("codex"));
+        // Degenerate input yields nothing (falls through to other detection).
+        assert_eq!(harness_from_ai_agent(""), None);
+        assert_eq!(harness_from_ai_agent("_leading"), None);
     }
 }
