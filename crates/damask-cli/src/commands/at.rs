@@ -546,8 +546,7 @@ fn print_json(
     closed_hidden: u64,
     graph_stats: &damask_store::GraphStats,
 ) {
-    let spans_json: Vec<serde_json::Value> =
-        spans.iter().map(render::span_json).collect();
+    let spans_json: Vec<serde_json::Value> = spans.iter().map(render::span_json).collect();
 
     let edges_json: Vec<serde_json::Value> = ranked
         .iter()

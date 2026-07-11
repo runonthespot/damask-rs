@@ -68,7 +68,12 @@ enum Mode {
     Stop,
 }
 
-pub fn run(file: Option<&str>, prompt: Option<&str>, stop: bool, session: Option<&str>) -> Result<()> {
+pub fn run(
+    file: Option<&str>,
+    prompt: Option<&str>,
+    stop: bool,
+    session: Option<&str>,
+) -> Result<()> {
     // Manual mode (testing) via flags; hook mode reads JSON from stdin.
     let (mode, session_id, hook_event) = if let Some(f) = file {
         (Mode::File(f.to_string()), session.map(String::from), None)
@@ -253,8 +258,7 @@ fn broadcast_line(edge: &EdgeRow) -> String {
 
 /// Non-blocking broadcast section appended to file/prompt injections.
 fn render_broadcasts(edges: &[&EdgeRow]) -> String {
-    let mut text =
-        String::from("[damask] Broadcast — repo-wide notice(s) from the last 24h:\n");
+    let mut text = String::from("[damask] Broadcast — repo-wide notice(s) from the last 24h:\n");
     for edge in edges {
         text.push_str(&broadcast_line(edge));
     }

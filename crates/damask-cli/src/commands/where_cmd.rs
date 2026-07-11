@@ -11,8 +11,8 @@ use crate::error::Result;
 use crate::output::Format;
 
 use super::at::edge_target_span_id;
-use crate::output::render::{self, freshness_glyph};
 use super::helpers;
+use crate::output::render::{self, freshness_glyph};
 
 /// Result ordering for `where`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]

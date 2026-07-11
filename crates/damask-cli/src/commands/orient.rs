@@ -12,8 +12,8 @@ use crate::error::Result;
 use crate::output::Format;
 
 use super::at::edge_target_span_id;
-use crate::output::render::freshness_glyph;
 use super::helpers;
+use crate::output::render::freshness_glyph;
 
 /// Maximum edges to show per section in human output.
 const SECTION_LIMIT: usize = 5;
@@ -293,7 +293,7 @@ pub(crate) fn collect(
             edges: rank_group(edges),
         })
         .collect();
-    sections.sort_by(|a, b| b.edges.len().cmp(&a.edges.len()));
+    sections.sort_by_key(|s| std::cmp::Reverse(s.edges.len()));
 
     // Recent edges: last 5 by timestamp (from filtered set)
     let mut recent: Vec<EdgeSummary> = filtered_edges

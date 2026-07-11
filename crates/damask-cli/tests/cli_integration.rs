@@ -1615,7 +1615,9 @@ fn init_claude_installs_hooks() {
     assert!(stop_commands.iter().any(|c| c.contains("damask harvest")));
     assert!(stop_commands.iter().any(|c| c.contains("damask peek")));
     assert!(
-        stop_commands.iter().all(|c| c.contains("command -v damask")),
+        stop_commands
+            .iter()
+            .all(|c| c.contains("command -v damask")),
         "Stop hooks must be guarded"
     );
     let post_tool_entries = doc["hooks"]["PostToolUse"].as_array().unwrap();
@@ -2995,7 +2997,15 @@ fn broadcast_rides_on_peek_and_stop_blocks_only_unseen() {
 
     // Repo-wide announcement, no file anchor needed.
     damask()
-        .args(["edge", "_", "_", "note", "-m", "URGENT: main is broken", "--broadcast"])
+        .args([
+            "edge",
+            "_",
+            "_",
+            "note",
+            "-m",
+            "URGENT: main is broken",
+            "--broadcast",
+        ])
         .current_dir(dir.path())
         .assert()
         .success();
@@ -3061,7 +3071,15 @@ fn peek_stop_hook_event_blocks_and_respects_stop_hook_active() {
     set_ns(&dir, "test");
 
     damask()
-        .args(["edge", "_", "_", "note", "-m", "schema migrated", "--broadcast"])
+        .args([
+            "edge",
+            "_",
+            "_",
+            "note",
+            "-m",
+            "schema migrated",
+            "--broadcast",
+        ])
         .current_dir(dir.path())
         .assert()
         .success();

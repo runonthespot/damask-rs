@@ -167,8 +167,11 @@ pub fn run(
                 // Same signal vocabulary as `at`/`where`: (x.xx) is the
                 // author's confidence (rank is already the list order),
                 // anchor carries the freshness glyph.
-                let cluster =
-                    crate::output::render::signal_cluster(&env, re.endorsement_count, re.dispute_count);
+                let cluster = crate::output::render::signal_cluster(
+                    &env,
+                    re.endorsement_count,
+                    re.dispute_count,
+                );
                 let anchor = super::at::edge_target_span_id(edge)
                     .and_then(|id| anchor_spans.get(id))
                     .map(|s| {
@@ -189,7 +192,10 @@ pub fn run(
                     })
                     .unwrap_or_default();
 
-                println!("  {} [{}]{}{} — {}", edge.id, edge.rel, cluster, anchor, summary);
+                println!(
+                    "  {} [{}]{}{} — {}",
+                    edge.id, edge.rel, cluster, anchor, summary
+                );
                 println!("    [{}, {}]", edge.ns, date);
                 println!();
             }
@@ -203,8 +209,8 @@ pub fn run(
             let edges_json: Vec<serde_json::Value> = page
                 .iter()
                 .map(|re| {
-                    let anchor =
-                        super::at::edge_target_span_id(&re.edge).and_then(|id| anchor_spans.get(id));
+                    let anchor = super::at::edge_target_span_id(&re.edge)
+                        .and_then(|id| anchor_spans.get(id));
                     crate::output::render::edge_json(re, anchor)
                 })
                 .collect();
