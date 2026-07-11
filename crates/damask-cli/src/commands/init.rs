@@ -43,6 +43,67 @@ const HARVEST_HOOK_KEY: &str = "damask harvest";
 const PEEK_HOOK_KEY: &str = "damask peek";
 const PEEK_TOOL_MATCHER: &str = "Read|Edit|Write|MultiEdit|NotebookEdit";
 
+/// The complete hook wiring a current `init --claude` installs.
+const EXPECTED_HOOKS: &[(&str, &str, &str)] = &[
+    ("SessionStart", BRIEFING_HOOK_KEY, BRIEFING_HOOK_COMMAND),
+    ("Stop", HARVEST_HOOK_KEY, HARVEST_HOOK_COMMAND),
+    ("Stop", PEEK_HOOK_KEY, PEEK_HOOK_COMMAND),
+    ("PostToolUse", PEEK_HOOK_KEY, PEEK_HOOK_COMMAND),
+    ("UserPromptSubmit", PEEK_HOOK_KEY, PEEK_HOOK_COMMAND),
+];
+
+/// Scaffold drift for a Claude-wired repo: the parts of `.claude/` that an
+/// idempotent `damask init --claude` would change. Empty when current.
+///
+/// Detection is by CONTENT, not version — features ship without version
+/// bumps during development, so "same version" proves nothing. Only repos
+/// that already opted into damask (skill installed or at least one damask
+/// hook wired) are inspected; everyone else stays un-nagged.
+pub(crate) fn claude_scaffold_drift(root: &Path) -> Vec<String> {
+    let mut drift = Vec::new();
+
+    let skill_installed = std::fs::read_to_string(root.join(".claude/skills/damask/SKILL.md")).ok();
+    if let Some(installed) = &skill_installed {
+        if installed != SKILL_MD {
+            drift.push(".claude/skills/damask/SKILL.md is stale".to_string());
+        }
+    }
+
+    let doc: Option<serde_json::Value> =
+        std::fs::read_to_string(root.join(".claude/settings.json"))
+            .ok()
+            .and_then(|c| serde_json::from_str(&c).ok());
+    if let Some(doc) = doc {
+        let find_hook = |event: &str, key: &str| -> Option<String> {
+            doc.pointer(&format!("/hooks/{event}"))?
+                .as_array()?
+                .iter()
+                .flat_map(|e| e.get("hooks").and_then(|h| h.as_array()).into_iter())
+                .flatten()
+                .filter_map(|h| h.get("command").and_then(|c| c.as_str()))
+                .find(|c| c.contains(key))
+                .map(String::from)
+        };
+        let damask_wired = skill_installed.is_some()
+            || EXPECTED_HOOKS
+                .iter()
+                .any(|(event, key, _)| find_hook(event, key).is_some());
+        if damask_wired {
+            for (event, key, command) in EXPECTED_HOOKS {
+                match find_hook(event, key) {
+                    None => drift.push(format!("{event} hook `{key}` is missing")),
+                    Some(installed) if installed != *command => {
+                        drift.push(format!("{event} hook `{key}` is an outdated form"))
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+
+    drift
+}
+
 /// True when running inside a live Claude Code session — the primary
 /// adopter of `damask init` is the agent itself, and it should not need
 /// to know about --claude.

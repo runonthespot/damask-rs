@@ -3622,6 +3622,73 @@ fn briefing_warns_when_installed_skill_is_stale() {
 }
 
 #[test]
+fn briefing_warns_when_hook_wiring_drifted() {
+    // A binary upgrade adds hooks the repo's settings.json doesn't have
+    // until init re-runs — briefing must name the gap once per session.
+    let dir = TempDir::new().unwrap();
+
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Simulate a repo scaffolded by an older binary: drop the Stop→peek
+    // entry (the broadcast backstop).
+    let settings_path = dir.path().join(".claude/settings.json");
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+    let stop = doc["hooks"]["Stop"].as_array_mut().unwrap();
+    stop.retain(|e| {
+        !e["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("damask peek")
+    });
+    fs::write(&settings_path, doc.to_string()).unwrap();
+
+    damask()
+        .arg("briefing")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("out of date"))
+        .stdout(predicate::str::contains(
+            "Stop hook `damask peek` is missing",
+        ))
+        .stdout(predicate::str::contains("damask init --claude"));
+}
+
+#[test]
+fn briefing_shows_version_and_stays_quiet_when_scaffold_is_current() {
+    let dir = TempDir::new().unwrap();
+
+    damask()
+        .args(["init", "--claude"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = damask()
+        .arg("briefing")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+    assert!(
+        text.contains("(damask v"),
+        "briefing must show the binary version: {text}"
+    );
+    assert!(
+        !text.contains("out of date"),
+        "a freshly initted repo must not be nagged: {text}"
+    );
+}
+
+#[test]
 fn review_markdown_is_pr_ready() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);

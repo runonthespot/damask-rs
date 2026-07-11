@@ -39,16 +39,24 @@ pub fn run(format: Format) -> Result<()> {
 
     let mut md = render_markdown(&data);
 
-    // Self-healing: warn when the installed skill predates this binary, so
-    // the agent (or user) refreshes it instead of working from stale docs.
-    let skill_path = project.root.join(".claude/skills/damask/SKILL.md");
-    if let Ok(installed) = std::fs::read_to_string(&skill_path) {
-        if installed != super::init::SKILL_MD {
-            md.push_str(
-                "\n⚠ The installed damask skill (.claude/skills/damask/SKILL.md) is out of \
-                 date with this damask binary — run `damask init --claude` to refresh it.\n",
-            );
+    // Self-healing: a binary upgrade doesn't touch the repo's scaffolding
+    // (skill copy, hook wiring) until init re-runs — detected by content,
+    // not version, and nudged once per session right here.
+    let drift = super::init::claude_scaffold_drift(&project.root);
+    if !drift.is_empty() {
+        let _ = writeln!(
+            md,
+            "\n⚠ This repo's damask scaffolding is out of date with the installed \
+             damask v{}:",
+            env!("CARGO_PKG_VERSION")
+        );
+        for d in &drift {
+            let _ = writeln!(md, "- {d}");
         }
+        let _ = writeln!(
+            md,
+            "Run `damask init --claude` to sync — idempotent, it only rewrites what drifted."
+        );
     }
 
     match format {
@@ -72,7 +80,11 @@ fn render_markdown(data: &OrientData) -> String {
     let mut md = String::new();
 
     if data.active_edge_count == 0 {
-        let _ = writeln!(md, "## Damask knowledge graph\n");
+        let _ = writeln!(
+            md,
+            "## Damask knowledge graph (damask v{})\n",
+            env!("CARGO_PKG_VERSION")
+        );
         let _ = writeln!(
             md,
             "This repo uses damask but the graph is empty (cold start). Seed it instantly \
@@ -94,7 +106,11 @@ fn render_markdown(data: &OrientData) -> String {
         return md;
     }
 
-    let _ = writeln!(md, "## Damask knowledge graph\n");
+    let _ = writeln!(
+        md,
+        "## Damask knowledge graph (damask v{})\n",
+        env!("CARGO_PKG_VERSION")
+    );
     let _ = writeln!(
         md,
         "{} edges across {} namespaces ({} active, {} closed; {} endorsements, {} disputes).",
