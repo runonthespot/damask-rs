@@ -3,12 +3,13 @@ use rusqlite::Connection;
 use crate::StoreError;
 
 /// Create the Damask SQLite schema (spans + edges + indexes).
+///
+/// DDL only — journal pragmas are set at connection open (build.rs), so
+/// this can run inside the rebuild's IMMEDIATE transaction (journal_mode
+/// cannot change mid-transaction).
 pub fn create_schema(conn: &Connection) -> Result<(), StoreError> {
     conn.execute_batch(
         "
-        PRAGMA journal_mode = WAL;
-        PRAGMA synchronous = NORMAL;
-
         CREATE TABLE IF NOT EXISTS spans (
             id            TEXT PRIMARY KEY,
             path          TEXT NOT NULL,

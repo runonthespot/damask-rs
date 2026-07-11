@@ -20,52 +20,192 @@ pub enum IndexMode {
     ViewsPreferred,
 }
 
+/// Default time a process waits for another's index write lock.
+const BUSY_TIMEOUT_MS: u64 = 5000;
+
 /// Rebuild the entire SQLite index from JSONL files.
 pub fn rebuild_index(db_path: &Path, edges_dir: &Path) -> Result<Connection, StoreError> {
     rebuild_index_with_mode(db_path, edges_dir, IndexMode::FullLog)
 }
 
 /// Rebuild the entire SQLite index from JSONL files using the given mode.
+///
+/// The rebuild happens **in place**, inside one IMMEDIATE transaction —
+/// the DB file is never unlinked while it may be live. Deleting an open
+/// SQLite file doesn't fail on unix; it silently splits concurrent
+/// processes onto divergent inodes (with orphaned -wal/-shm sidecars),
+/// which is how two agents once wedged each other on this index.
+/// Recreating the file is reserved for the one state that cannot be a
+/// live database: corruption.
 pub fn rebuild_index_with_mode(
     db_path: &Path,
     edges_dir: &Path,
     mode: IndexMode,
 ) -> Result<Connection, StoreError> {
-    // Remove existing DB if present
-    if db_path.exists() {
-        std::fs::remove_file(db_path).map_err(|e| StoreError::Io(e.to_string()))?;
+    rebuild_index_at(db_path, edges_dir, mode, BUSY_TIMEOUT_MS)
+}
+
+fn rebuild_index_at(
+    db_path: &Path,
+    edges_dir: &Path,
+    mode: IndexMode,
+    busy_ms: u64,
+) -> Result<Connection, StoreError> {
+    let conn = open_connection_at(db_path, busy_ms)?;
+    match begin_immediate(&conn) {
+        Ok(()) => {}
+        Err(BeginFailure::Busy) => {
+            // Another process is rebuilding right now. If it already
+            // produced a usable schema, serve that — stale beats dead.
+            if schema_is_current(&conn) {
+                return Ok(conn);
+            }
+            return Err(StoreError::Io(
+                "index is being rebuilt by another process — retry shortly".to_string(),
+            ));
+        }
+        Err(BeginFailure::Corrupt) => {
+            drop(conn);
+            remove_index_files(db_path);
+            let conn = open_connection_at(db_path, busy_ms)?;
+            begin_immediate(&conn).map_err(|f| StoreError::Io(f.message()))?;
+            return build_under_lock(conn, edges_dir, mode);
+        }
+        Err(f @ BeginFailure::Other(_)) => return Err(StoreError::Io(f.message())),
     }
 
-    let conn = open_connection(db_path)?;
-    create_schema(&conn)?;
+    // Re-check under the lock: a stampede of processes that all found the
+    // index missing/stale serializes here, and every follower discovers
+    // the leader's finished work instead of redoing it.
+    if schema_is_current(&conn) {
+        let jsonl_files = list_jsonl_files(edges_dir, mode);
+        let project_root = project_root_of(edges_dir);
+        if find_changed_files(&conn, &jsonl_files)?.is_empty()
+            && find_deleted_files(&conn, &jsonl_files)?.is_empty()
+            && code_changes(&conn, project_root)?.is_none()
+        {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| StoreError::Io(e.to_string()))?;
+            return Ok(conn);
+        }
+    }
 
-    // Derive project root: edges_dir is .damask/edges, so root is two levels up
-    let project_root = edges_dir
+    build_under_lock(conn, edges_dir, mode)
+}
+
+/// Drop and recreate the schema, then load all facts — caller must hold an
+/// IMMEDIATE transaction. Commits on success; the transaction dies with the
+/// connection on error.
+fn build_under_lock(
+    conn: Connection,
+    edges_dir: &Path,
+    mode: IndexMode,
+) -> Result<Connection, StoreError> {
+    let result = (|| {
+        drop_schema(&conn)?;
+        create_schema(&conn)?;
+
+        let project_root = project_root_of(edges_dir);
+        let jsonl_files = list_jsonl_files(edges_dir, mode);
+        let all_facts = read_facts_from_files(&jsonl_files)?;
+        insert_facts(&conn, &all_facts, project_root, &ReuseMap::new())?;
+
+        store_file_mtimes(&conn, &jsonl_files)?;
+        store_code_state(&conn, project_root)?;
+        compute_active_state(&conn)?;
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| StoreError::Io(e.to_string()))?;
+            Ok(conn)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+/// Drop every index object so `create_schema` starts clean. Triggers and
+/// the FTS table go first (they reference `edges`).
+fn drop_schema(conn: &Connection) -> Result<(), StoreError> {
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS edges_ai;
+         DROP TRIGGER IF EXISTS edges_ad;
+         DROP TRIGGER IF EXISTS edges_au;
+         DROP TABLE IF EXISTS edges_fts;
+         DROP TABLE IF EXISTS spans;
+         DROP TABLE IF EXISTS edges;
+         DROP TABLE IF EXISTS index_meta;",
+    )
+    .map_err(|e| StoreError::Io(e.to_string()))
+}
+
+/// Derive project root: edges_dir is .damask/edges, so root is two levels up.
+fn project_root_of(edges_dir: &Path) -> &Path {
+    edges_dir
         .parent()
         .and_then(|p| p.parent())
-        .unwrap_or(edges_dir);
+        .unwrap_or(edges_dir)
+}
 
-    // Read all facts from all JSONL files
-    let jsonl_files = list_jsonl_files(edges_dir, mode);
-    let all_facts = read_facts_from_files(&jsonl_files)?;
-    insert_facts(&conn, &all_facts, project_root, &ReuseMap::new())?;
+/// Remove the DB file and its WAL sidecars. Only valid when the file is
+/// known not to be a live database (corruption recovery).
+fn remove_index_files(db_path: &Path) {
+    let _ = std::fs::remove_file(db_path);
+    for ext in ["-wal", "-shm"] {
+        let mut os = db_path.as_os_str().to_owned();
+        os.push(ext);
+        let _ = std::fs::remove_file(PathBuf::from(os));
+    }
+}
 
-    // Store mtimes + code-state fingerprints for incremental updates
-    store_file_mtimes(&conn, &jsonl_files)?;
-    store_code_state(&conn, project_root)?;
+/// Why `BEGIN IMMEDIATE` failed — contention and corruption need different
+/// responses, so the raw error is classified before being mapped away.
+enum BeginFailure {
+    /// Another process held the write lock past the busy timeout.
+    Busy,
+    /// The file is not a SQLite database.
+    Corrupt,
+    Other(String),
+}
 
-    // Compute active state
-    compute_active_state(&conn)?;
+impl BeginFailure {
+    fn message(&self) -> String {
+        match self {
+            BeginFailure::Busy => "index is locked by another process".to_string(),
+            BeginFailure::Corrupt => "index file is not a database".to_string(),
+            BeginFailure::Other(e) => e.clone(),
+        }
+    }
+}
 
-    Ok(conn)
+fn begin_immediate(conn: &Connection) -> Result<(), BeginFailure> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| match &e {
+        rusqlite::Error::SqliteFailure(f, _) => match f.code {
+            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked => {
+                BeginFailure::Busy
+            }
+            rusqlite::ErrorCode::NotADatabase => BeginFailure::Corrupt,
+            _ => BeginFailure::Other(e.to_string()),
+        },
+        _ => BeginFailure::Other(e.to_string()),
+    })
 }
 
 /// Open the index with a busy timeout so concurrent damask processes wait
 /// for each other's updates instead of failing with SQLITE_BUSY.
-fn open_connection(db_path: &Path) -> Result<Connection, StoreError> {
+fn open_connection_at(db_path: &Path, busy_ms: u64) -> Result<Connection, StoreError> {
     let conn = Connection::open(db_path).map_err(|e| StoreError::Io(e.to_string()))?;
-    conn.busy_timeout(std::time::Duration::from_millis(5000))
+    conn.busy_timeout(std::time::Duration::from_millis(busy_ms))
         .map_err(|e| StoreError::Io(e.to_string()))?;
+    // Journal pragmas live here (not in create_schema) so schema DDL can
+    // run inside a transaction — journal_mode cannot change mid-txn.
+    // Errors deliberately ignored: on a corrupt file these fail, and
+    // corruption is detected and repaired at BEGIN IMMEDIATE time.
+    let _ = conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
     Ok(conn)
 }
 
@@ -90,29 +230,41 @@ pub fn update_index(db_path: &Path, edges_dir: &Path) -> Result<Connection, Stor
 /// The whole update runs inside one IMMEDIATE transaction with a busy
 /// timeout, so N concurrent stale processes serialize and share one
 /// rebuild instead of stampeding.
+///
+/// Multi-agent contract: contention never fails a command. If another
+/// process holds the write lock past the timeout (slow rebuild, or a
+/// stuck/suspended process), the existing index is served as-is — the
+/// index is a disposable cache over the append-only JSONL, so reads a few
+/// seconds stale beat a dead command, and the JSONL truth is untouched
+/// either way.
 pub fn update_index_with_mode(
     db_path: &Path,
     edges_dir: &Path,
     mode: IndexMode,
 ) -> Result<Connection, StoreError> {
+    update_index_at(db_path, edges_dir, mode, BUSY_TIMEOUT_MS)
+}
+
+fn update_index_at(
+    db_path: &Path,
+    edges_dir: &Path,
+    mode: IndexMode,
+    busy_ms: u64,
+) -> Result<Connection, StoreError> {
     if !db_path.exists() {
-        return rebuild_index_with_mode(db_path, edges_dir, mode);
+        return rebuild_index_at(db_path, edges_dir, mode, busy_ms);
     }
 
-    let conn = open_connection(db_path)?;
+    let conn = open_connection_at(db_path, busy_ms)?;
 
     // Verify schema exists and is current — if not, full rebuild.
     // Check for index_meta table AND source_file column on spans (added in current schema).
     if !schema_is_current(&conn) {
         drop(conn);
-        return rebuild_index_with_mode(db_path, edges_dir, mode);
+        return rebuild_index_at(db_path, edges_dir, mode, busy_ms);
     }
 
-    // Derive project root
-    let project_root = edges_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .unwrap_or(edges_dir);
+    let project_root = project_root_of(edges_dir);
 
     // Cheap pre-check without the write lock.
     let jsonl_files = list_jsonl_files(edges_dir, mode);
@@ -125,8 +277,20 @@ pub fn update_index_with_mode(
 
     // Work is needed: take the write lock, then RE-CHECK — a concurrent
     // process may have completed the same update while we waited.
-    conn.execute_batch("BEGIN IMMEDIATE")
-        .map_err(|e| StoreError::Io(e.to_string()))?;
+    match begin_immediate(&conn) {
+        Ok(()) => {}
+        Err(BeginFailure::Busy) => {
+            eprintln!(
+                "damask: index locked by another process; using existing (possibly stale) index"
+            );
+            return Ok(conn);
+        }
+        Err(BeginFailure::Corrupt) => {
+            drop(conn);
+            return rebuild_index_at(db_path, edges_dir, mode, busy_ms);
+        }
+        Err(f @ BeginFailure::Other(_)) => return Err(StoreError::Io(f.message())),
+    }
 
     let result = apply_update(&conn, edges_dir, project_root, mode);
     match result {
@@ -931,6 +1095,113 @@ mod tests {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap()
+    }
+
+    fn edges_fixture(root: &Path) -> (PathBuf, PathBuf) {
+        let edges_dir = root.join(".damask/edges");
+        std::fs::create_dir_all(&edges_dir).unwrap();
+        (root.join(".damask/index.db"), edges_dir)
+    }
+
+    fn append_span(edges_dir: &Path, n: u32) {
+        let span = make_span(
+            &format!("f{n}.rs"),
+            1,
+            1,
+            &damask_resolve::content_hash("x"),
+            None,
+        );
+        FactWriter::append(&edges_dir.join("test.jsonl"), &Fact::Span(span)).unwrap();
+    }
+
+    fn span_count(conn: &Connection) -> u32 {
+        conn.query_row("SELECT COUNT(*) FROM spans", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Rebuild must never unlink a live DB. A connection held across a
+    /// full rebuild stays on the same inode and sees the rebuilt data —
+    /// the old remove-then-recreate approach silently split concurrent
+    /// agents onto divergent databases.
+    #[test]
+    fn rebuild_in_place_keeps_concurrent_connections_coherent() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, edges_dir) = edges_fixture(dir.path());
+        append_span(&edges_dir, 1);
+        let holder = update_index(&db, &edges_dir).unwrap(); // long-lived agent A
+
+        append_span(&edges_dir, 2);
+        let fresh = rebuild_index(&db, &edges_dir).unwrap(); // agent B forces a rebuild
+        assert_eq!(span_count(&fresh), 2);
+        assert_eq!(
+            span_count(&holder),
+            2,
+            "agent A's handle must see the rebuild, not an orphaned inode"
+        );
+    }
+
+    /// A writer stuck past the busy timeout must degrade reads to the
+    /// existing index, never fail the command — the index is a cache over
+    /// the append-only log, so stale beats dead.
+    #[test]
+    fn update_degrades_to_stale_reads_when_writer_is_stuck() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, edges_dir) = edges_fixture(dir.path());
+        append_span(&edges_dir, 1);
+        drop(update_index(&db, &edges_dir).unwrap());
+
+        // A stuck process holding the write lock indefinitely.
+        let stuck = Connection::open(&db).unwrap();
+        stuck.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        // New knowledge lands regardless — JSONL appends don't touch SQLite.
+        append_span(&edges_dir, 2);
+
+        let conn = update_index_at(&db, &edges_dir, IndexMode::FullLog, 100).unwrap();
+        assert_eq!(span_count(&conn), 1, "must serve stale reads, not fail");
+        drop(conn);
+
+        // The stuck process dies → the next update heals the index.
+        drop(stuck);
+        let conn = update_index_at(&db, &edges_dir, IndexMode::FullLog, 100).unwrap();
+        assert_eq!(span_count(&conn), 2);
+    }
+
+    /// Garbage where the index should be is repaired transparently — the
+    /// one case where recreating the file is correct.
+    #[test]
+    fn corrupt_index_file_is_rebuilt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, edges_dir) = edges_fixture(dir.path());
+        append_span(&edges_dir, 1);
+        std::fs::write(&db, "this is not a sqlite database, sorry").unwrap();
+
+        let conn = update_index(&db, &edges_dir).unwrap();
+        assert_eq!(span_count(&conn), 1);
+    }
+
+    /// N agents starting cold on the same repo must all succeed, with the
+    /// followers finding the leader's finished work under the lock instead
+    /// of stampeding into redundant rebuilds.
+    #[test]
+    fn cold_start_stampede_all_succeed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, edges_dir) = edges_fixture(dir.path());
+        append_span(&edges_dir, 1);
+
+        let handles: Vec<_> = (0..6)
+            .map(|_| {
+                let db = db.clone();
+                let edges_dir = edges_dir.clone();
+                std::thread::spawn(move || {
+                    let conn = update_index(&db, &edges_dir).unwrap();
+                    span_count(&conn)
+                })
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap(), 1);
+        }
     }
 
     /// A mid-session source edit must refresh the anchor on the next index

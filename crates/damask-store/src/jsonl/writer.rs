@@ -51,24 +51,46 @@ impl FactWriter {
         Ok(())
     }
 
-    /// Write facts to a file, truncating any existing content.
+    /// Write facts to a file, replacing any existing content.
     /// Use this instead of `append_all` when rewriting a file (e.g. compact).
+    ///
+    /// Write-then-rename: a concurrent reader (or the indexer) must never
+    /// observe a half-written file, and truncate-in-place exposes exactly
+    /// that window. The temp name carries the pid so concurrent rewriters
+    /// never collide; rename is atomic on POSIX.
     pub fn write_all(path: &Path, facts: &[Fact]) -> Result<(), StoreError> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| StoreError::Io(e.to_string()))?;
         }
 
+        let mut buf = String::new();
+        for fact in facts {
+            let json = serde_json::to_string(fact).map_err(StoreError::Json)?;
+            buf.push_str(&json);
+            buf.push('\n');
+        }
+
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "facts.jsonl".to_string());
+        let tmp = path.with_file_name(format!(".{name}.tmp.{}", std::process::id()));
+
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
-            .open(path)
+            .open(&tmp)
             .map_err(|e| StoreError::Io(e.to_string()))?;
+        file.write_all(buf.as_bytes())
+            .map_err(|e| StoreError::Io(e.to_string()))?;
+        file.sync_all().map_err(|e| StoreError::Io(e.to_string()))?;
+        drop(file);
 
-        for fact in facts {
-            let json = serde_json::to_string(fact).map_err(StoreError::Json)?;
-            writeln!(file, "{}", json).map_err(|e| StoreError::Io(e.to_string()))?;
-        }
+        fs::rename(&tmp, path).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
+            StoreError::Io(e.to_string())
+        })?;
 
         Ok(())
     }
@@ -187,6 +209,29 @@ mod tests {
                 prev = id;
             }
         }
+    }
+
+    /// write_all replaces via temp-file + rename: the target is complete at
+    /// every instant a reader could open it, and no temp files leak.
+    #[test]
+    fn write_all_replaces_atomically_and_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("view.jsonl");
+        FactWriter::write_all(&path, &[make_edge("first")]).unwrap();
+        FactWriter::write_all(&path, &[make_edge("second"), make_edge("third")]).unwrap();
+
+        let raw = fs::read_to_string(&path).unwrap();
+        assert_eq!(raw.lines().count(), 2);
+        assert!(raw.contains("second"));
+        assert!(!raw.contains("first"));
+
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".tmp."))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files leaked: {leftovers:?}");
     }
 
     #[test]
