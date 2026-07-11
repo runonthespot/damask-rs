@@ -43,6 +43,10 @@ jobs:
   release-binaries:
     name: build binaries — ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    # GITHUB_TOKEN is read-only by default on new repos; creating the
+    # release and attaching artifacts needs contents:write.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
