@@ -2827,6 +2827,51 @@ fn peek_prompt_mode_matches_keywords() {
 }
 
 #[test]
+fn peek_prompt_mode_suppresses_single_filler_word_misfire() {
+    // Field bug: a short, generic message ("is damask working for you?")
+    // surfaced an unrelated edge that happened to share ONE filler word.
+    // Prompt-mode injection now requires >=2 distinct keyword matches, so a
+    // lone-word overlap stays silent.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    fs::write(dir.path().join("cite.rs"), "fn c() {}\n").unwrap();
+    // An edge whose only tie to the prompt is the generic word "working".
+    damask()
+        .args([
+            "record",
+            "cite.rs",
+            "1",
+            "1",
+            "gotcha",
+            "-m",
+            "Citation navigation keeps working after remount",
+            "-c",
+            "0.9",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Two content keywords (damask, working); the edge matches only one.
+    damask()
+        .args(["peek", "--prompt", "is damask working for you"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    // A specific single-keyword prompt still injects (floor caps at 1).
+    damask()
+        .args(["peek", "--prompt", "remount"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Citation navigation"));
+}
+
+#[test]
 fn peek_ignores_non_file_tools_and_fails_open() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);

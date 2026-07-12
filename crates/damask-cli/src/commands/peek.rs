@@ -53,6 +53,12 @@ const CANDIDATE_LIMIT: usize = 12;
 const SEEN_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
 /// Maximum keywords fed to FTS from a prompt.
 const MAX_KEYWORDS: usize = 8;
+/// Specificity floor for prompt-mode injection: an edge must match at least
+/// this many distinct query keywords to be injected (capped at the prompt's
+/// keyword count, so a single specific keyword still matches). Kills the
+/// short-message misfire where one generic filler word ("working") hit an
+/// unrelated edge; a real match shares multiple query terms.
+const MIN_PROMPT_KEYWORD_OVERLAP: usize = 2;
 
 const STOPWORDS: &[&str] = &[
     "this", "that", "with", "from", "what", "when", "where", "does", "have", "will", "about",
@@ -316,11 +322,18 @@ fn prompt_candidates(
     if keywords.is_empty() {
         return Vec::new();
     }
+    // FTS MATCH ("kw1 OR kw2 …") returns any edge hit by ONE keyword. That
+    // over-fires on short prompts, where a lone filler word matches an
+    // unrelated edge. Require the match to share enough distinct keywords
+    // to be specific — the semantic (ck) path above already matches on
+    // meaning and needs no such gate.
+    let required = keywords.len().min(MIN_PROMPT_KEYWORD_OVERLAP);
     let query = keywords.join(" OR ");
     let inputs: Vec<RankingInput> = q
         .search_fts_open(&query, None, None)
         .unwrap_or_default()
         .into_iter()
+        .filter(|edge| keyword_overlap(&edge.payload, &keywords) >= required)
         .take(CANDIDATE_LIMIT * 2)
         .map(|edge| {
             let weight = super::helpers::edge_resolution_weight(q, &edge);
@@ -328,6 +341,17 @@ fn prompt_candidates(
         })
         .collect();
     rank_edges(inputs, CANDIDATE_LIMIT)
+}
+
+/// Count of distinct `keywords` (already lowercased) that appear anywhere
+/// in an edge's payload. Case-insensitive substring match — the same shape
+/// as FTS token matching, enough to gauge how specific a hit is.
+fn keyword_overlap(payload: &str, keywords: &[String]) -> usize {
+    let payload = payload.to_ascii_lowercase();
+    keywords
+        .iter()
+        .filter(|k| payload.contains(k.as_str()))
+        .count()
 }
 
 /// Lowercased alphanumeric tokens (length ≥ 4), stopwords removed, deduped.
@@ -500,5 +524,20 @@ mod tests {
                 "unsafe token: {k}"
             );
         }
+    }
+
+    #[test]
+    fn keyword_overlap_counts_distinct_matches() {
+        let kws = vec!["token".to_string(), "expiry".to_string()];
+        // A real match shares both terms.
+        assert_eq!(keyword_overlap("Token expiry never validated", &kws), 2);
+        // A filler-word misfire shares only one — below the min-2 floor.
+        assert_eq!(
+            keyword_overlap("citation navigation on expiry pages", &kws),
+            1
+        );
+        // Case-insensitive; no keywords, no overlap.
+        assert_eq!(keyword_overlap("TOKEN store", &kws), 1);
+        assert_eq!(keyword_overlap("unrelated text", &kws), 0);
     }
 }
