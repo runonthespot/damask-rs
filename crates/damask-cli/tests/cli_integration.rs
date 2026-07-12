@@ -3967,19 +3967,18 @@ fn record_finding(dir: &TempDir, file: &str, summary: &str) -> String {
         .to_string()
 }
 
-#[test]
-fn harvest_reconcile_nudges_unsignalled_session_over_open_findings() {
-    // The fix-without-close leak: a session edits a file carrying an open
-    // finding, records its own new knowledge, but never signals on the
-    // pre-existing edge — one reconciliation ask at the stop boundary.
-    let dir = TempDir::new().unwrap();
-    init_project(&dir);
-    set_ns(&dir, "test");
-    let root = dir.path().canonicalize().unwrap();
-    fs::write(root.join("auth.rs"), "fn validate() {}\n").unwrap();
-    let edge_id = record_finding(&dir, "auth.rs", "no rate limiting on login");
+/// Rewrite a file so a recorded span over it can no longer be resolved:
+/// the old anchored content is gone AND doesn't reappear anywhere, so the
+/// resolver returns unresolved/missing (a lost anchor, not a relocation).
+fn drift_file(dir: &TempDir, file: &str) {
+    fs::write(
+        dir.path().join(file),
+        "zzzz completely unrelated content bearing no resemblance to the original zzzz\n",
+    )
+    .unwrap();
+}
 
-    // Session window starts AFTER the finding exists.
+fn edit_then_bash_transcript(root: &std::path::Path, file: &str, bash: &str) -> std::path::PathBuf {
     let transcript = root.join("transcript.jsonl");
     fs::write(
         &transcript,
@@ -3987,19 +3986,36 @@ fn harvest_reconcile_nudges_unsignalled_session_over_open_findings() {
             transcript_tool_use_at(
                 "2099-01-01T00:00:00Z",
                 "Edit",
-                serde_json::json!({"file_path": root.join("auth.rs").to_string_lossy()}),
+                serde_json::json!({"file_path": root.join(file).to_string_lossy()}),
             ),
             transcript_tool_use_at(
                 "2099-01-01T00:01:00Z",
                 "Bash",
-                serde_json::json!({"command": "damask record auth.rs 1 1 note -m 'new detail'"}),
+                serde_json::json!({ "command": bash }),
             ),
         ]
         .join("\n")
             + "\n",
     )
     .unwrap();
+    transcript
+}
 
+#[test]
+fn harvest_reconcile_nudges_on_edit_induced_drift() {
+    // An edit that moves the code under an open finding drifts its anchor;
+    // the session records new knowledge but never reconciles the drifted
+    // edge — one gardening ask at the stop boundary, framed around confirm.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    let root = dir.path().canonicalize().unwrap();
+    fs::write(root.join("auth.rs"), "fn validate() {}\n").unwrap();
+    let edge_id = record_finding(&dir, "auth.rs", "no rate limiting on login");
+    drift_file(&dir, "auth.rs"); // anchor goes orange
+
+    let transcript =
+        edit_then_bash_transcript(&root, "auth.rs", "damask record auth.rs 1 1 note -m 'new'");
     let output = damask()
         .args(["harvest", "--transcript", &transcript.to_string_lossy()])
         .current_dir(dir.path())
@@ -4011,41 +4027,32 @@ fn harvest_reconcile_nudges_unsignalled_session_over_open_findings() {
     let doc: serde_json::Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(doc["decision"], "block");
     let reason = doc["reason"].as_str().unwrap();
-    assert!(reason.contains(&edge_id), "must name the open finding");
-    assert!(reason.contains("open finding"));
+    assert!(
+        reason.contains(&edge_id),
+        "must name the lost-anchor finding"
+    );
+    assert!(
+        reason.contains("no longer") || reason.contains("changed or removed"),
+        "framed as a lost anchor: {reason}"
+    );
     assert!(reason.contains("damask close"));
 }
 
 #[test]
-fn harvest_reconcile_passes_sessions_that_signalled() {
+fn harvest_reconcile_does_not_nudge_when_anchor_stayed_green() {
+    // The same shape, but the edit did NOT disturb the finding's anchor —
+    // it's still accurate, so there is nothing to reconcile. (Editing near
+    // a still-valid finding must not nag.)
     let dir = TempDir::new().unwrap();
     init_project(&dir);
     set_ns(&dir, "test");
     let root = dir.path().canonicalize().unwrap();
     fs::write(root.join("auth.rs"), "fn validate() {}\n").unwrap();
-    let edge_id = record_finding(&dir, "auth.rs", "no rate limiting on login");
+    record_finding(&dir, "auth.rs", "no rate limiting on login");
+    // No drift: file content under the anchor is unchanged.
 
-    // Same shape, but the session closed the finding — gardening happened.
-    let transcript = root.join("transcript.jsonl");
-    fs::write(
-        &transcript,
-        [
-            transcript_tool_use_at(
-                "2099-01-01T00:00:00Z",
-                "Edit",
-                serde_json::json!({"file_path": root.join("auth.rs").to_string_lossy()}),
-            ),
-            transcript_tool_use_at(
-                "2099-01-01T00:01:00Z",
-                "Bash",
-                serde_json::json!({"command": format!("damask close {edge_id} --reason resolved")}),
-            ),
-        ]
-        .join("\n")
-            + "\n",
-    )
-    .unwrap();
-
+    let transcript =
+        edit_then_bash_transcript(&root, "auth.rs", "damask record auth.rs 1 1 note -m 'new'");
     damask()
         .args(["harvest", "--transcript", &transcript.to_string_lossy()])
         .current_dir(dir.path())
@@ -4055,17 +4062,58 @@ fn harvest_reconcile_passes_sessions_that_signalled() {
 }
 
 #[test]
-fn harvest_reconcile_ignores_findings_recorded_by_the_session_itself() {
-    // A session must not be nudged to reconcile the edges it just wrote:
-    // the only finding on the file lands INSIDE the session window.
+fn harvest_reconcile_excludes_the_edge_you_signalled_but_not_the_one_you_left() {
+    // The gap this closes: a session that signals on edge A but leaves a
+    // second drifted finding B unreconciled must still be nudged about B —
+    // and never about A.
     let dir = TempDir::new().unwrap();
     init_project(&dir);
     set_ns(&dir, "test");
     let root = dir.path().canonicalize().unwrap();
     fs::write(root.join("auth.rs"), "fn validate() {}\n").unwrap();
-    record_finding(&dir, "auth.rs", "recorded during this very session");
+    let edge_a = record_finding(&dir, "auth.rs", "finding A about validate");
+    let edge_b = record_finding(&dir, "auth.rs", "finding B about validate");
+    drift_file(&dir, "auth.rs"); // both anchors go orange
 
-    // Window starts long before the edge's timestamp.
+    // Session endorses A by id (leaves it open+drifted), never touches B.
+    let transcript = edit_then_bash_transcript(
+        &root,
+        "auth.rs",
+        &format!("damask endorse {edge_a} && damask record auth.rs 1 1 note -m 'x'"),
+    );
+    let output = damask()
+        .args(["harvest", "--transcript", &transcript.to_string_lossy()])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(doc["decision"], "block");
+    let reason = doc["reason"].as_str().unwrap();
+    assert!(
+        reason.contains(&edge_b),
+        "must nudge about the unreconciled B"
+    );
+    assert!(
+        !reason.contains(&edge_a),
+        "must not nudge about the edge it signalled: {reason}"
+    );
+}
+
+#[test]
+fn harvest_reconcile_ignores_findings_recorded_by_the_session_itself() {
+    // A session must not be nudged to reconcile edges it just wrote, even if
+    // its own later edits drift them — the window filter excludes them.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    let root = dir.path().canonicalize().unwrap();
+    fs::write(root.join("auth.rs"), "fn validate() {}\n").unwrap();
+
+    // Window starts long before the in-session record; the finding is
+    // recorded (and drifted) inside the window, so it must be excluded.
     let transcript = root.join("transcript.jsonl");
     fs::write(
         &transcript,
@@ -4078,13 +4126,15 @@ fn harvest_reconcile_ignores_findings_recorded_by_the_session_itself() {
             transcript_tool_use_at(
                 "2000-01-01T00:01:00Z",
                 "Bash",
-                serde_json::json!({"command": "damask record auth.rs 1 1 risk -m 'recorded during this very session' -c 0.9"}),
+                serde_json::json!({"command": "damask record auth.rs 1 1 risk -m 'recorded this session' -c 0.9"}),
             ),
         ]
         .join("\n")
             + "\n",
     )
     .unwrap();
+    record_finding(&dir, "auth.rs", "recorded this session");
+    drift_file(&dir, "auth.rs");
 
     damask()
         .args(["harvest", "--transcript", &transcript.to_string_lossy()])

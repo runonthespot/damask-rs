@@ -43,8 +43,10 @@ struct SessionActivity {
     edited_files: Vec<String>,
     /// True if the session ran any damask write command.
     recorded: bool,
-    /// True if the session signalled on existing edges (endorse/dispute/close/confirm).
-    signalled: bool,
+    /// Edge/span id tokens the session signalled on (endorse/dispute/close/
+    /// confirm). May be prefixes — agents pass `e_01KH3K`. Used to exclude
+    /// already-gardened edges from the drift-reconcile nudge.
+    signalled_ids: std::collections::HashSet<String>,
     /// Earliest transcript timestamp (ISO-8601 UTC) — the session window start.
     window_start: Option<String>,
 }
@@ -88,23 +90,23 @@ pub fn run(transcript_override: Option<&str>) -> Result<()> {
 
     // Findings were recorded: shift from quantity to quality.
     if activity.recorded {
-        // Inbound gate first (field-driven): a session that edits annotated
-        // files and never signals is the fix-without-close leak — the fix
-        // that resolves a finding usually refactors away its anchor, and
-        // the edge then rots open forever. One reconciliation ask.
-        if !activity.signalled {
-            if let Some(reason) = reconcile_reason(
-                &project,
-                &activity.edited_files,
-                activity.window_start.as_deref(),
-            ) {
-                let output = serde_json::json!({
-                    "decision": "block",
-                    "reason": reason,
-                });
-                println!("{}", serde_json::to_string(&output).unwrap());
-                return Ok(());
-            }
+        // Inbound gate first (field-driven): when this session's edits moved
+        // the code under an open finding — its anchor "went orange" — that is
+        // the moment to reconcile, by the agent who has the context. Gardening
+        // stale-context drift later just yields rubber-stamps; catching it at
+        // the edit does not. Excludes edges the session already signalled on.
+        if let Some(reason) = reconcile_reason(
+            &project,
+            &activity.edited_files,
+            activity.window_start.as_deref(),
+            &activity.signalled_ids,
+        ) {
+            let output = serde_json::json!({
+                "decision": "block",
+                "reason": reason,
+            });
+            println!("{}", serde_json::to_string(&output).unwrap());
+            return Ok(());
         }
         // Then quality: lint what this session wrote and nudge once if
         // anything is seriously deficient.
@@ -204,7 +206,15 @@ fn scan_transcript(transcript_path: &Path, root: &Path) -> Option<SessionActivit
                     activity.recorded = true;
                 }
                 if is_damask_signal(cmd) {
-                    activity.signalled = true;
+                    // Capture the id token(s) so the drift nudge can exclude
+                    // edges this session already gardened. Endorse/dispute
+                    // leave an edge open+drifted; without this they'd be
+                    // re-nagged. (close removes it; confirm clears the drift.)
+                    for tok in cmd.split_whitespace() {
+                        if (tok.starts_with("e_") || tok.starts_with("s_")) && tok.len() > 2 {
+                            activity.signalled_ids.insert(tok.to_string());
+                        }
+                    }
                 }
             }
         }
@@ -275,15 +285,31 @@ fn quality_reason(project: &DamaskProject, window_start: Option<&str>) -> Option
     ))
 }
 
-/// Open findings anchored to files this session edited, when the session
-/// never signalled. Only findings that PRE-DATE the session count — a
-/// session must not be nudged to reconcile the edges it just recorded.
-/// Returns None (stop allowed) when the edited files carry no open
-/// pre-existing edges or on any error.
+/// True when a span's anchor is genuinely LOST — the code it pinned can no
+/// longer be located. `relocated` is deliberately excluded: the resolver
+/// already re-anchored moved code to its new lines (it returns Relocated
+/// only after finding the content by hash/symbol/snippet), so that finding
+/// is still valid and needs no gardening. `file_changed` recency alone is
+/// excluded for the same reason — if the content still resolves, the
+/// finding holds. Only `missing` (file gone) and `unresolved` (content
+/// changed beyond recognition) mean a human must decide the finding's fate.
+fn anchor_lost(span: &damask_store::index::query::SpanRow) -> bool {
+    matches!(
+        span.resolution.as_deref(),
+        Some("missing") | Some("unresolved")
+    )
+}
+
+/// Pre-existing open findings on edited files whose anchor DRIFTED and which
+/// the session did not signal on — the edit-time gardening obligation. Only
+/// findings older than the session window count (never nag about edges the
+/// session just recorded). Returns None (stop allowed) when there is nothing
+/// to reconcile or on any error.
 fn reconcile_reason(
     project: &DamaskProject,
     edited_files: &[String],
     window_start: Option<&str>,
+    signalled_ids: &std::collections::HashSet<String>,
 ) -> Option<String> {
     if edited_files.is_empty() {
         return None;
@@ -294,14 +320,27 @@ fn reconcile_reason(
     let conn = update_index_with_mode(&db_path, &edges_dir, IndexMode::ViewsPreferred).ok()?;
     let q = IndexQuery::new(&conn);
 
-    // (file, edge_id, rel, summary) for open edges on edited files.
+    // An edge counts as gardened if any signalled token is a prefix of its
+    // id (agents pass id prefixes). Cheap and errs toward not nagging.
+    let already_signalled = |id: &str| signalled_ids.iter().any(|tok| id.starts_with(tok.as_str()));
+
+    // (file, edge_id, rel, summary) for DRIFTED open edges on edited files.
     let mut findings: Vec<(String, String, String, String)> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for file in edited_files {
         for span in q.spans_for_file(file).ok()? {
+            // Only findings whose anchor the resolver could NOT recover are an
+            // obligation. Exact, file-changed, and relocated all still resolve
+            // (relocated auto-re-anchors) — editing near them changes nothing.
+            if !anchor_lost(&span) {
+                continue;
+            }
             for edge in q.edges_for_span_open(&span.id).ok()? {
                 // ISO-8601 UTC timestamps compare lexicographically.
-                if edge.ts.as_str() >= window_start || !seen.insert(edge.id.clone()) {
+                if edge.ts.as_str() >= window_start
+                    || already_signalled(&edge.id)
+                    || !seen.insert(edge.id.clone())
+                {
                     continue;
                 }
                 let payload: serde_json::Value =
@@ -336,15 +375,17 @@ fn reconcile_reason(
     }
 
     Some(format!(
-        "Damask harvest: you edited files that carry {total} open finding(s), and this session \
-         never signalled on any edge:\n\n{lines}\n\
-         Did your changes resolve, confirm, or contradict any of these?\n\
-         - Fixed/obsolete: `damask close <edge_id> --reason resolved`\n\
-         - Still true of the new code: `damask endorse <edge_id>` (or `damask confirm <span_id>` if the anchor drifted)\n\
+        "Damask harvest: your edits changed or removed the code under {total} open finding(s), \
+         so the resolver can no longer anchor them (❌) — and you didn't reconcile them:\n\n{lines}\n\
+         (Code that merely MOVED was re-anchored automatically; these are the ones that genuinely \
+         no longer resolve.) You have the context right now — a later session won't. For each:\n\
+         - Resolved or obsolete now: `damask close <edge_id> --reason resolved`\n\
+         - Still true, just relocated somewhere the resolver missed: `damask record` it at the new \
+         location, then close this one\n\
          - Wrong: `damask dispute <edge_id> --reason ...`\n\n\
-         Unclosed findings on refactored code rot open forever — this is the #1 source of stale \
-         knowledge in production graphs. If none of these were affected by your changes, simply \
-         finish — you will not be asked again."
+         Lost anchors nobody reconciles are the #1 source of graph rot, and they are cheapest to \
+         garden here, by you, at the edit that broke them. If none apply, simply finish — you will \
+         not be asked again."
     ))
 }
 
