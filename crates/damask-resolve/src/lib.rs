@@ -108,7 +108,7 @@ pub fn resolve_span(
 
         // Step 3: Search entire file for content hash match (relocated lines)
         if let Some((new_start, new_end)) =
-            search_file_for_hash(&file_lines, stored_hash, span_line_count(start, end))
+            search_file_for_hash(&file_lines, stored_hash, span_line_count(start, end), start)
         {
             let recency = compute_recency(project_root, &anchor.path, anchor.commit.as_deref());
             return Ok(ResolveResult {
@@ -194,9 +194,11 @@ fn resolve_renamed(
             }
         }
 
-        // Search entire renamed file for hash match
+        // Search entire renamed file for hash match. A rename often
+        // preserves structure, so the original line is still a useful prior
+        // for picking among duplicate blocks.
         if let Some((new_start, new_end)) =
-            search_file_for_hash(file_lines, stored_hash, span_line_count(start, end))
+            search_file_for_hash(file_lines, stored_hash, span_line_count(start, end), start)
         {
             return Ok(ResolveResult {
                 freshness: Freshness::new(Resolution::Relocated, recency),
@@ -304,20 +306,40 @@ fn span_line_count(start: u32, end: u32) -> u32 {
 }
 
 /// Slide a window of `span_len` lines across the file, hashing each window
-/// to find where content relocated to.
-fn search_file_for_hash(lines: &[String], target_hash: &str, span_len: u32) -> Option<(u32, u32)> {
+/// to find where content relocated to. When the anchored block is
+/// duplicated in the file, ALL windows match the hash — so pick the one
+/// NEAREST the original line, not the first top-to-bottom. Code moves
+/// locally far more often than globally, so nearest-to-original is the
+/// best guess at which copy is "the" relocation; first-match would jump
+/// to an unrelated identical block at the top of the file. `orig_start`
+/// is the span's original 1-indexed start line.
+///
+/// This heuristic can't be perfect: if the real code moved far while an
+/// identical block sits near the original, nearest picks wrong. True
+/// disambiguation needs semantic identity, not textual — out of scope
+/// for a resolver. Nearest is the right v1.
+fn search_file_for_hash(
+    lines: &[String],
+    target_hash: &str,
+    span_len: u32,
+    orig_start: u32,
+) -> Option<(u32, u32)> {
     let span_len = span_len as usize;
     if span_len == 0 || lines.len() < span_len {
         return None;
     }
+    let orig_idx = orig_start.saturating_sub(1) as usize;
+    let mut best: Option<(usize, usize)> = None; // (start_idx, distance)
     for start_idx in 0..=(lines.len() - span_len) {
         let window = lines[start_idx..start_idx + span_len].join("\n");
-        let hash = content_hash(&window);
-        if hash == target_hash {
-            return Some(((start_idx + 1) as u32, (start_idx + span_len) as u32));
+        if content_hash(&window) == target_hash {
+            let dist = start_idx.abs_diff(orig_idx);
+            if best.map_or(true, |(_, best_dist)| dist < best_dist) {
+                best = Some((start_idx, dist));
+            }
         }
     }
-    None
+    best.map(|(start_idx, _)| ((start_idx + 1) as u32, (start_idx + span_len) as u32))
 }
 
 /// Search for a symbol (function/struct name) in the file.
@@ -765,6 +787,36 @@ mod tests {
         assert_eq!(span_line_count(5, 10), 6);
         assert_eq!(span_line_count(3, 3), 1);
         assert_eq!(span_line_count(10, 5), 0);
+    }
+
+    #[test]
+    fn relocation_prefers_the_copy_nearest_the_original() {
+        // The anchored block ("AAA\nBBB") is duplicated three times. The
+        // original was at lines 6-7; the nearest surviving copy is at 9-10.
+        // First-match would wrongly jump to the copy at the top (1-2).
+        let lines: Vec<String> = [
+            "AAA", "BBB", // 1-2: a decoy copy near the top
+            "x", "y", "z", // 3-5
+            "changed", "here", // 6-7: where the original was (now different)
+            "q",    // 8
+            "AAA", "BBB", // 9-10: the nearest surviving copy
+            "AAA", "BBB", // 11-12: a farther copy
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let target = content_hash("AAA\nBBB");
+        // orig_start = 6 → nearest match is 9-10, not the first (1-2).
+        assert_eq!(
+            search_file_for_hash(&lines, &target, 2, 6),
+            Some((9, 10)),
+            "must re-anchor to the duplicate nearest the original, not the first"
+        );
+        // A block that appears exactly once resolves unambiguously.
+        let uniq = content_hash("changed\nhere");
+        assert_eq!(search_file_for_hash(&lines, &uniq, 2, 6), Some((6, 7)));
+        // No match at all.
+        assert_eq!(search_file_for_hash(&lines, "deadbeef", 2, 6), None);
     }
 
     #[test]
