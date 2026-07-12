@@ -220,7 +220,7 @@ pub fn run(force_claude: bool, force_codex: bool, no_agents: bool) -> Result<()>
         println!();
         println!("Warm start for this session (hooks take over from the next one):");
         println!();
-        let _ = super::briefing::run(crate::output::Format::Human);
+        let _ = super::briefing::run(crate::output::Format::Human, false);
         println!();
         println!("Share the graph with your team and their agents:");
         println!("  git add .damask .claude && git commit -m \"Add damask knowledge fabric\"");

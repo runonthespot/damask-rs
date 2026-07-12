@@ -25,7 +25,13 @@ const MAX_RECENT: usize = 5;
 /// Summary truncation width.
 const SUMMARY_WIDTH: usize = 100;
 
-pub fn run(format: Format) -> Result<()> {
+/// `export` produces a read-only digest for environments without the hook
+/// loop or the CLI — a sandbox/in-box agent that reads it but cannot write
+/// back. Field-driven: in-box agents re-derived what the graph already knew
+/// (a sandbox burned ~20 turns on a gotcha that was recorded), because
+/// damask never reached them. The host captures this outside the box and
+/// injects it alongside the agent's skills.
+pub fn run(format: Format, export: bool) -> Result<()> {
     // Fail open at every step: no project, no index, no problem.
     let Ok(cwd) = env::current_dir() else {
         return Ok(());
@@ -37,32 +43,33 @@ pub fn run(format: Format) -> Result<()> {
         return Ok(());
     };
 
-    let mut md = render_markdown(&data);
+    let mut md = render_markdown(&data, export);
 
-    // Self-healing: a binary upgrade doesn't touch the repo's scaffolding
-    // (skill copy, hook wiring) until init re-runs — detected by content,
-    // not version, and nudged once per session right here.
-    let drift = super::init::claude_scaffold_drift(&project.root);
-    if !drift.is_empty() {
-        let _ = writeln!(
-            md,
-            "\n⚠ This repo's damask scaffolding is out of date with the installed \
-             damask v{}:",
-            env!("CARGO_PKG_VERSION")
-        );
-        for d in &drift {
-            let _ = writeln!(md, "- {d}");
+    // Scaffold-drift self-healing is a host-session concern (it tells the
+    // agent to re-run init) — pointless for a read-only in-box consumer.
+    if !export {
+        let drift = super::init::claude_scaffold_drift(&project.root);
+        if !drift.is_empty() {
+            let _ = writeln!(
+                md,
+                "\n⚠ This repo's damask scaffolding is out of date with the installed \
+                 damask v{}:",
+                env!("CARGO_PKG_VERSION")
+            );
+            for d in &drift {
+                let _ = writeln!(md, "- {d}");
+            }
+            let _ = writeln!(
+                md,
+                "Run `damask init --claude` to sync — idempotent, it only rewrites what drifted."
+            );
         }
-        let _ = writeln!(
-            md,
-            "Run `damask init --claude` to sync — idempotent, it only rewrites what drifted."
-        );
     }
 
-    match format {
-        Format::Human => print!("{md}"),
-        Format::Json => {
-            // Claude Code SessionStart hook JSON envelope.
+    match (format, export) {
+        (Format::Human, _) => print!("{md}"),
+        // Hook mode: the Claude Code SessionStart envelope.
+        (Format::Json, false) => {
             let output = serde_json::json!({
                 "hookSpecificOutput": {
                     "hookEventName": "SessionStart",
@@ -71,15 +78,28 @@ pub fn run(format: Format) -> Result<()> {
             });
             println!("{}", serde_json::to_string(&output).unwrap());
         }
+        // Export mode: a plain envelope a host embeds however it injects.
+        (Format::Json, true) => {
+            let output = serde_json::json!({ "digest": md });
+            println!("{}", serde_json::to_string(&output).unwrap());
+        }
     }
 
     Ok(())
 }
 
-fn render_markdown(data: &OrientData) -> String {
+fn render_markdown(data: &OrientData, export: bool) -> String {
     let mut md = String::new();
 
     if data.active_edge_count == 0 {
+        // An in-box consumer can't seed — say plainly there's nothing yet.
+        if export {
+            let _ = writeln!(
+                md,
+                "## Damask knowledge — read-only snapshot\n\nNo findings recorded for this repo yet.\n"
+            );
+            return md;
+        }
         let _ = writeln!(
             md,
             "## Damask knowledge graph (damask v{})\n",
@@ -106,11 +126,15 @@ fn render_markdown(data: &OrientData) -> String {
         return md;
     }
 
-    let _ = writeln!(
-        md,
-        "## Damask knowledge graph (damask v{})\n",
-        env!("CARGO_PKG_VERSION")
-    );
+    if export {
+        let _ = writeln!(md, "## Damask knowledge — read-only snapshot\n");
+    } else {
+        let _ = writeln!(
+            md,
+            "## Damask knowledge graph (damask v{})\n",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
     let _ = writeln!(
         md,
         "{} edges across {} namespaces ({} active, {} closed; {} endorsements, {} disputes).",
@@ -196,13 +220,27 @@ fn render_markdown(data: &OrientData) -> String {
         }
     }
 
-    let _ = writeln!(
-        md,
-        "\nBefore changing a file, check what is known: `damask at <file>[:line]`. \
-         Search with `damask search \"<query>\"`, full picture with `damask orient`. \
-         Record new findings with `damask record`; confirm or contradict existing edges \
-         with `damask endorse <id>` / `damask dispute <id>`."
-    );
+    if export {
+        // Read-only consumer: no CLI, no hooks. It can't query or record —
+        // but it CAN carry what it learns back out. That closes the relay
+        // across the sandbox wall: the host session that launched the box
+        // records the box's findings through its own hook loop.
+        let _ = writeln!(
+            md,
+            "\nThis is a read-only snapshot of what prior sessions learned about this repo. \
+             You cannot query or record from here. Use it to avoid re-deriving what is already \
+             known; if you discover something new or find a claim above is wrong, state it \
+             plainly in your result so the session that launched you can record it."
+        );
+    } else {
+        let _ = writeln!(
+            md,
+            "\nBefore changing a file, check what is known: `damask at <file>[:line]`. \
+             Search with `damask search \"<query>\"`, full picture with `damask orient`. \
+             Record new findings with `damask record`; confirm or contradict existing edges \
+             with `damask endorse <id>` / `damask dispute <id>`."
+        );
+    }
 
     md
 }

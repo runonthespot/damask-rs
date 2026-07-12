@@ -196,7 +196,7 @@ fn main() -> anyhow::Result<()> {
             uncontested,
             show_closed,
         ),
-        Command::Briefing => commands::briefing::run(cli.format),
+        Command::Briefing { export } => commands::briefing::run(cli.format, export),
         Command::Peek {
             file,
             prompt,

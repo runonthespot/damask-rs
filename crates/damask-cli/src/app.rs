@@ -410,7 +410,14 @@ pub enum Command {
     /// Prints a token-capped markdown digest of the knowledge graph for
     /// injection into an agent's context. Silent (exit 0) when no .damask/
     /// is found — safe to run unconditionally as a hook.
-    Briefing,
+    Briefing {
+        /// Read-only digest for a hookless/sandboxed agent (no CLI in the
+        /// box): drops the writer trailer and self-heal nag, framing the
+        /// output as a snapshot the agent reads but cannot write back. Run
+        /// on the host at box launch and inject the output as context.
+        #[arg(long)]
+        export: bool,
+    },
 
     /// Session-end harvest check (designed for Claude Code Stop hook).
     ///

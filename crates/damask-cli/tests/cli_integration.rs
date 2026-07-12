@@ -3734,6 +3734,81 @@ fn briefing_shows_version_and_stays_quiet_when_scaffold_is_current() {
 }
 
 #[test]
+fn briefing_export_is_read_only_framed() {
+    // The in-box digest must carry the knowledge but NONE of the writer/host
+    // affordances: no CLI verbs to run, no version nag, no drift warning —
+    // and a trailer that tells a hookless agent to surface findings in its
+    // result instead of recording them.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::write(dir.path().join("auth.rs"), "fn v() {}\n").unwrap();
+    damask()
+        .args([
+            "record",
+            "auth.rs",
+            "1",
+            "1",
+            "gotcha",
+            "-m",
+            "validation skipped when cfg missing",
+            "-c",
+            "0.9",
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let output = damask()
+        .args(["briefing", "--export"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).unwrap();
+
+    // Carries the knowledge.
+    assert!(text.contains("validation skipped when cfg missing"));
+    assert!(text.contains("read-only snapshot"));
+    // Read-only framing: tell it to surface findings, not record them.
+    assert!(text.contains("state it plainly in your result"));
+    // None of the writer/host affordances.
+    for banned in ["damask record", "damask init", "out of date", "(damask v"] {
+        assert!(
+            !text.contains(banned),
+            "export digest must not contain writer/host affordance {banned:?}: {text}"
+        );
+    }
+}
+
+#[test]
+fn briefing_export_json_is_a_plain_digest_not_a_hook_envelope() {
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+
+    let output = damask()
+        .args(["--format", "json", "briefing", "--export"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let doc: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert!(
+        doc["digest"].is_string(),
+        "export json wraps a digest string"
+    );
+    assert!(
+        doc["hookSpecificOutput"].is_null(),
+        "export json must not be the SessionStart hook envelope"
+    );
+}
+
+#[test]
 fn review_markdown_is_pr_ready() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);
