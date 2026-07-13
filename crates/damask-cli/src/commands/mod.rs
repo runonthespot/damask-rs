@@ -30,7 +30,6 @@ pub mod status;
 pub mod sweep;
 pub mod tag;
 pub mod triage;
-pub mod tui;
 pub mod verify;
 pub mod where_cmd;
 pub mod why;

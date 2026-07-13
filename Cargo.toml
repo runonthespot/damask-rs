@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# damask-tui is mothballed (retired 2026-07-13): the VS Code extension now
+# serves visual graph browsing better, and the untested TUI was build drag.
+# Kept in-tree for a one-commit revival — drop this exclude and restore the
+# `tui` subcommand + damask-cli dependency to bring it back.
+exclude = ["crates/damask-tui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,10 +16,12 @@ repository = "https://github.com/runonthespot/damask-rs"
 
 [workspace.dependencies]
 # Internal — version alongside path so the workspace is publishable to
-# crates.io (publish order: core → resolve → store → tui → cli).
+# crates.io (publish order: core → resolve → store → cli).
 damask-core = { path = "crates/damask-core", version = "0.1.0" }
 damask-store = { path = "crates/damask-store", version = "0.1.0" }
 damask-resolve = { path = "crates/damask-resolve", version = "0.1.0" }
+# damask-tui dependency kept for revival; the crate is excluded from the
+# workspace build (see [workspace].exclude) and unused while mothballed.
 damask-tui = { path = "crates/damask-tui", version = "0.1.0" }
 
 # Serialization

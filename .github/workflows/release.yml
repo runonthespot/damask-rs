@@ -28,7 +28,7 @@ jobs:
             echo "::error::CARGO_REGISTRY_TOKEN is not set — add it in repo secrets to publish."
             exit 1
           fi
-          for crate in damask-core damask-resolve damask-store damask-tui damask; do
+          for crate in damask-core damask-resolve damask-store damask; do
             echo "::group::publish $crate"
             # --no-verify: the workspace is already tested in CI; retry a few
             # times while the registry index catches up with prior crates.

@@ -571,9 +571,6 @@ pub enum Command {
         /// Second namespace.
         ns_b: String,
     },
-
-    /// Interactive terminal UI.
-    Tui,
 }
 
 #[derive(Subcommand)]

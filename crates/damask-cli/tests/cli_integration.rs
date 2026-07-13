@@ -249,19 +249,6 @@ fn ns_override_flag() {
 }
 
 #[test]
-fn tui_requires_project() {
-    let dir = TempDir::new().unwrap();
-
-    // TUI should fail gracefully without a .damask/ directory
-    damask()
-        .arg("tui")
-        .current_dir(dir.path())
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(".damask"));
-}
-
-#[test]
 fn at_shows_ranked_edges() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);

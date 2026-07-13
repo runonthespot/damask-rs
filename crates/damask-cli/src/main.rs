@@ -253,6 +253,5 @@ fn main() -> anyhow::Result<()> {
         ),
         Command::Enrich => commands::enrich::run(cli.format),
         Command::Diff { ns_a, ns_b } => commands::diff::run(&ns_a, &ns_b, cli.format),
-        Command::Tui => commands::tui::run(),
     }
 }

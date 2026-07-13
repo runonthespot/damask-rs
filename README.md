@@ -110,7 +110,7 @@ code --install-extension damask-vscode-*.vsix
 | `confirm <id>` | re-anchor a finding that drifted but still holds |
 | `triage` / `sweep` | find rot; propose closes; heal drifted anchors |
 | `why <id>` / `blame <id>` | provenance: who claimed, confirmed, disputed |
-| `search` / `follow` / `tui` | full-text search, graph traversal, interactive UI |
+| `search` / `follow` | full-text search, graph traversal |
 
 Namespaces isolate work (per-audit, per-agent), and can **assert their own
 payload schema** — `damask` over legal contracts declares `jurisdiction`
@@ -137,10 +137,12 @@ cargo test --workspace      # the suite CI runs
 cargo fmt --all
 ```
 
-Rust 1.75+. The workspace is five crates: `damask-core` (types),
+Rust 1.75+. The workspace is four crates: `damask-core` (types),
 `damask-resolve` (span resolution + freshness), `damask-store` (JSONL + SQLite
-index + ranking), `damask-tui`, and `damask-cli`. CI runs format + build +
-test on every push; see `.github/workflows/`.
+index + ranking), and `damask-cli`. Visual graph browsing lives in the VS Code
+extension (`editors/vscode/`). CI runs format + build + test on every push; see
+`.github/workflows/`. (`damask-tui`, a terminal UI, is mothballed and excluded
+from the build — see the `exclude` in the root `Cargo.toml`.)
 
 ## Releasing
 

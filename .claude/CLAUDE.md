@@ -4,15 +4,19 @@ Damask is a knowledge fabric for AI agents — structured memory layered over co
 
 ## Architecture
 
-Five crates, layered with no circular dependencies:
+Four crates, layered with no circular dependencies:
 
 ```
 damask-cli          Binary + clap commands
-damask-tui          ratatui terminal UI
 damask-store        JSONL I/O, SQLite index, ranking, predicates
 damask-resolve      Content hashing + freshness detection + git rename tracking
 damask-core         Pure types (Span, Edge, Fact, IDs) — no I/O
 ```
+
+Visual browsing lives in the VS Code extension (`editors/vscode/`).
+`damask-tui` (terminal UI) is mothballed — kept in-tree but `exclude`d from
+the workspace build; revive by dropping the exclude and restoring the `tui`
+subcommand.
 
 ## Conventions
 
