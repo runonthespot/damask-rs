@@ -68,6 +68,34 @@ function worstFreshness(anchors: SpanFact[]): Freshness {
   return "unknown";
 }
 
+/** Severity rank for rollup: lower is worse. */
+function freshnessRank(f: Freshness): number {
+  return { gone: 0, drifted: 1, fresh: 2, unknown: 3 }[f];
+}
+
+/** An edge's span anchors, looked up from the graph's span table. */
+function anchorsOf(edge: EdgeFact, spans: Map<string, SpanFact>): SpanFact[] {
+  return [edge.from, edge.to]
+    .filter((id): id is string => !!id && id.startsWith("s_"))
+    .map((id) => spans.get(id))
+    .filter((s): s is SpanFact => !!s);
+}
+
+/** Worst freshness across a whole subtree of edges — so a folder or section
+ * inherits the most-degraded dot beneath it: 13 fresh + 1 drifted → drifted.
+ * A glance at the root then reveals whether anything inside needs a look. */
+function subtreeFreshness(
+  edges: EdgeFact[],
+  spans: Map<string, SpanFact>
+): Freshness {
+  let worst: Freshness = "unknown";
+  for (const e of edges) {
+    const f = worstFreshness(anchorsOf(e, spans));
+    if (freshnessRank(f) < freshnessRank(worst)) worst = f;
+  }
+  return worst;
+}
+
 interface EdgeFact {
   id: string;
   from: string | null;
@@ -299,19 +327,35 @@ class EdgeItem extends vscode.TreeItem {
   }
 }
 
-/** A namespace — one edge-set folder (.damask/edges/<ns>.jsonl). */
+/** A namespace — one edge-set folder (.damask/edges/<ns>.jsonl). Its dot is
+ * the worst freshness among all edges beneath it. */
 class NamespaceItem extends vscode.TreeItem {
-  constructor(public readonly ns: string, public readonly edges: EdgeFact[]) {
-    super(ns, vscode.TreeItemCollapsibleState.Collapsed);
+  constructor(
+    public readonly ns: string,
+    public readonly edges: EdgeFact[],
+    freshness: Freshness = "unknown"
+  ) {
+    const dot = FRESHNESS_DOT[freshness];
+    super(`${dot ? dot + " " : ""}${ns}`, vscode.TreeItemCollapsibleState.Collapsed);
     this.description = `${edges.length} edge${edges.length === 1 ? "" : "s"}`;
     this.iconPath = new vscode.ThemeIcon("folder-library");
     this.contextValue = "damaskNamespace";
   }
 }
 
+/** A rel section within a namespace; its dot rolls up the worst freshness of
+ * the edges it contains. */
 class RelGroupItem extends vscode.TreeItem {
-  constructor(public readonly rel: string, public readonly edges: EdgeFact[]) {
-    super(`${rel} (${edges.length})`, vscode.TreeItemCollapsibleState.Collapsed);
+  constructor(
+    public readonly rel: string,
+    public readonly edges: EdgeFact[],
+    freshness: Freshness = "unknown"
+  ) {
+    const dot = FRESHNESS_DOT[freshness];
+    super(
+      `${dot ? dot + " " : ""}${rel} (${edges.length})`,
+      vscode.TreeItemCollapsibleState.Collapsed
+    );
     this.iconPath = relIcon(rel);
     this.contextValue = "damaskRelGroup";
   }
@@ -463,7 +507,10 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
           edgesB.length - edgesA.length ||
           relA.localeCompare(relB)
       )
-      .map(([rel, es]) => new RelGroupItem(rel, es));
+      .map(
+        ([rel, es]) =>
+          new RelGroupItem(rel, es, subtreeFreshness(es, this.graph?.spans ?? new Map()))
+      );
   }
 
   getChildren(element?: vscode.TreeItem): vscode.TreeItem[] {
@@ -544,7 +591,14 @@ class DamaskTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
               ([nsA, edgesA], [nsB, edgesB]) =>
                 edgesB.length - edgesA.length || nsA.localeCompare(nsB)
             )
-            .map(([ns, edges]) => new NamespaceItem(ns, edges));
+            .map(
+              ([ns, edges]) =>
+                new NamespaceItem(
+                  ns,
+                  edges,
+                  subtreeFreshness(edges, this.graph!.spans)
+                )
+            );
 
     // Active search pinned at the top — click to clear.
     if (this.filterQuery) {
