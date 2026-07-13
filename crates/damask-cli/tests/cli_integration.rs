@@ -944,6 +944,53 @@ fn lint_flags_empty_payload() {
 }
 
 #[test]
+fn lint_ignores_closed_edges() {
+    // A closed edge is retired — its quality/anchor problems are irrelevant.
+    // Lint must scan the live (open) graph only, matching at/where/briefing.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::write(dir.path().join("t.rs"), "fn foo() {}\n").unwrap();
+
+    let out = damask()
+        .args(["--format", "json", "span", "t.rs", "1", "1"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let span: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let span_id = span["id"].as_str().unwrap();
+
+    // A deficient edge (empty payload) — lint flags it while open.
+    let out = damask()
+        .args(["--format", "json", "edge", span_id, "_", "risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let edge: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let edge_id = edge["id"].as_str().unwrap();
+
+    damask()
+        .arg("lint")
+        .current_dir(dir.path())
+        .assert()
+        .stdout(predicate::str::contains("empty payload"));
+
+    // Close it — now lint must stay silent about it.
+    damask()
+        .args(["close", edge_id, "--reason", "resolved"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    damask()
+        .arg("lint")
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No lint issues"));
+}
+
+#[test]
 fn lint_clean_project() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);

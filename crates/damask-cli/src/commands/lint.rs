@@ -19,7 +19,12 @@ pub fn run(format: Format) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     let q = IndexQuery::new(&conn);
-    let all_edges = q.all_active_edges().map_err(|e| anyhow::anyhow!("{}", e))?;
+    // Lint the LIVE graph only — closed edges are resolved/retired and their
+    // stale anchors are irrelevant (nagging about a closed edge's drift is
+    // noise). Matches the open-set every other read surface uses.
+    let all_edges = q
+        .all_active_open_edges()
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Build lint inputs with span snippets and resolution data.
     // Try from_id first; if it's not a span, fall back to to_id.
