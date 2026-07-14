@@ -36,14 +36,18 @@ pub fn run(namespace: Option<&str>, aggressive: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Build the set of inactive edge IDs from the index
+    // Edges the current-state view must NOT contain: superseded (inactive)
+    // and closed. A closed content edge keeps is_active=1 (close ≠
+    // supersede), so filtering on !is_active alone kept the content edge
+    // while its `closed` meta-edge (is_active=0) got dropped — the view then
+    // RESURRECTED it as open under ViewsPreferred reads. Include is_closed.
     let all_edges = q
         .all_edges_chronological()
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    let inactive_ids: HashSet<String> = all_edges
+    let retired_ids: HashSet<String> = all_edges
         .iter()
-        .filter(|e| !e.is_active)
+        .filter(|e| !e.is_active || e.is_closed)
         .map(|e| e.id.clone())
         .collect();
 
@@ -52,8 +56,8 @@ pub fn run(namespace: Option<&str>, aggressive: bool) -> Result<()> {
         all_edges
             .iter()
             .filter(|e| {
-                if !e.is_active {
-                    return false; // already in inactive_ids
+                if !e.is_active || e.is_closed {
+                    return false; // already in retired_ids
                 }
                 let p: serde_json::Value =
                     serde_json::from_str(&e.payload).unwrap_or(serde_json::json!({}));
@@ -96,12 +100,12 @@ pub fn run(namespace: Option<&str>, aggressive: bool) -> Result<()> {
                         let target_id = edge.from.as_ref().map(|t| t.to_string());
                         match target_id {
                             Some(tid) => {
-                                inactive_ids.contains(&tid) || aggressive_ids.contains(&tid)
+                                retired_ids.contains(&tid) || aggressive_ids.contains(&tid)
                             }
                             None => true, // malformed meta-edge; drop from view
                         }
                     } else {
-                        inactive_ids.contains(&id) || aggressive_ids.contains(&id)
+                        retired_ids.contains(&id) || aggressive_ids.contains(&id)
                     }
                 }
                 Fact::Span(_) => false, // never remove spans

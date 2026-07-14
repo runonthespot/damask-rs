@@ -1194,6 +1194,80 @@ fn compact_removes_inactive_edges() {
 }
 
 #[test]
+fn compact_view_does_not_resurrect_closed_edges() {
+    // A closed edge stays is_active=1, so a view built from !is_active alone
+    // kept the content edge while dropping its `closed` meta — reads through
+    // the view (ViewsPreferred) then showed it OPEN again. The compacted view
+    // must stay a faithful current-state snapshot: closed stays closed.
+    let dir = TempDir::new().unwrap();
+    init_project(&dir);
+    set_ns(&dir, "test");
+    fs::write(dir.path().join("a.rs"), "fn foo() {}\n").unwrap();
+
+    let out = damask()
+        .args([
+            "--format",
+            "json",
+            "record",
+            "a.rs",
+            "1",
+            "1",
+            "risk",
+            "-m",
+            "resolved finding",
+            "-c",
+            "0.9",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let facts: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let edge_id = facts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["rel"] == "risk")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    damask()
+        .args(["close", &edge_id, "--reason", "resolved"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Compact writes the view (which reads prefer).
+    damask()
+        .arg("compact")
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Reading through the view must NOT show the closed edge as open.
+    damask()
+        .args(["at", "a.rs"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&edge_id).not());
+
+    // And it must not resurface in where's open set either.
+    let out = damask()
+        .args(["--format", "json", "where", "rel=risk"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let edges = doc["edges"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !edges.iter().any(|e| e["id"] == edge_id.as_str()),
+        "closed edge resurrected through the compacted view"
+    );
+}
+
+#[test]
 fn why_shows_provenance() {
     let dir = TempDir::new().unwrap();
     init_project(&dir);
