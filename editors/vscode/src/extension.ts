@@ -25,21 +25,26 @@ interface SpanFact {
   ts: string;
 }
 
-/** Traffic-light freshness from the resolver's verdict: green = content
- * hash still matches in place; amber = found but moved, or the file has
- * changed since recording; red = the anchor no longer exists. */
-type Freshness = "fresh" | "drifted" | "gone" | "unknown";
+/** Freshness from the resolver's verdict. green = content hash matches in
+ * place on committed-clean code; grey = matches, but the file has uncommitted
+ * changes (recheck after commit); amber = the anchor moved (relocated); red =
+ * the anchor no longer exists. Resolution leads — recency only distinguishes
+ * green from grey for an otherwise-exact anchor. */
+type Freshness = "fresh" | "uncommitted" | "drifted" | "gone" | "unknown";
 
 function spanFreshness(s: SpanFact | undefined): Freshness {
   if (!s || !s.resolution) return "unknown";
   if (s.resolution === "missing" || s.resolution === "unresolved") return "gone";
-  if (s.resolution === "relocated" || s.recency === "file_changed") return "drifted";
-  if (s.resolution === "exact") return "fresh";
+  if (s.resolution === "relocated") return "drifted";
+  if (s.resolution === "exact") {
+    return s.recency === "file_changed" ? "uncommitted" : "fresh";
+  }
   return "unknown";
 }
 
 const FRESHNESS_DOT: Record<Freshness, string> = {
   fresh: "🟢",
+  uncommitted: "⚪",
   drifted: "🟠",
   gone: "🔴",
   unknown: "",
@@ -47,6 +52,7 @@ const FRESHNESS_DOT: Record<Freshness, string> = {
 
 const FRESHNESS_WORD: Record<Freshness, string> = {
   fresh: "fresh",
+  uncommitted: "uncommitted — file not yet committed",
   drifted: "code drifted",
   gone: "anchor gone",
   unknown: "",
@@ -54,6 +60,7 @@ const FRESHNESS_WORD: Record<Freshness, string> = {
 
 const FRESHNESS_COLOR: Record<Freshness, string> = {
   fresh: "charts.green",
+  uncommitted: "disabledForeground",
   drifted: "charts.yellow",
   gone: "charts.red",
   unknown: "disabledForeground",
@@ -61,16 +68,18 @@ const FRESHNESS_COLOR: Record<Freshness, string> = {
 
 /** Worst-of for an edge's anchors: one bad endpoint taints the finding. */
 function worstFreshness(anchors: SpanFact[]): Freshness {
-  const order: Freshness[] = ["gone", "drifted", "fresh"];
+  const order: Freshness[] = ["gone", "drifted", "uncommitted", "fresh"];
   for (const level of order) {
     if (anchors.some((a) => spanFreshness(a) === level)) return level;
   }
   return "unknown";
 }
 
-/** Severity rank for rollup: lower is worse. */
+/** Severity rank for rollup: lower is worse. Uncommitted sits between drifted
+ * and fresh — a folder with any dirty file reads grey, but real drift (amber)
+ * still dominates. */
 function freshnessRank(f: Freshness): number {
-  return { gone: 0, drifted: 1, fresh: 2, unknown: 3 }[f];
+  return { gone: 0, drifted: 1, uncommitted: 2, fresh: 3, unknown: 4 }[f];
 }
 
 /** An edge's span anchors, looked up from the graph's span table. */

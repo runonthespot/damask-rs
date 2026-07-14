@@ -675,9 +675,10 @@ fn snapshot_resolutions(conn: &Connection, files: &[PathBuf]) -> Result<ReuseMap
 }
 
 /// Re-resolve exactly the spans affected by a code delta and update their
-/// rows in place: spans anchored to changed files always; when HEAD moved,
-/// also spans that weren't cleanly resolved (rename detection may now
-/// succeed).
+/// rows in place: spans anchored to changed files always; and when HEAD
+/// moved, ALL spans — because recency (committed-ness) is measured against
+/// HEAD, so a commit can flip any span's recency (grey↔green) even when its
+/// content and resolution are unchanged.
 fn refresh_spans(
     conn: &Connection,
     project_root: &Path,
@@ -685,7 +686,7 @@ fn refresh_spans(
 ) -> Result<usize, StoreError> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, path, line_start, line_end, snippet, symbol, content_hash, [commit], resolution
+            "SELECT id, path, line_start, line_end, snippet, symbol, content_hash, [commit]
              FROM spans",
         )
         .map_err(|e| StoreError::Io(e.to_string()))?;
@@ -698,7 +699,6 @@ fn refresh_spans(
         symbol: Option<String>,
         content_hash: Option<String>,
         commit: Option<String>,
-        resolution: Option<String>,
     }
     let rows = stmt
         .query_map([], |row| {
@@ -711,7 +711,6 @@ fn refresh_spans(
                 symbol: row.get(5)?,
                 content_hash: row.get(6)?,
                 commit: row.get(7)?,
-                resolution: row.get(8)?,
             })
         })
         .map_err(|e| StoreError::Io(e.to_string()))?;
@@ -719,8 +718,7 @@ fn refresh_spans(
     let mut affected = Vec::new();
     for row in rows {
         let r = row.map_err(|e| StoreError::Io(e.to_string()))?;
-        let clean = matches!(r.resolution.as_deref(), Some("exact"));
-        if delta.changed_paths.contains(&r.path) || (delta.head_moved && !clean) {
+        if delta.changed_paths.contains(&r.path) || delta.head_moved {
             affected.push(r);
         }
     }

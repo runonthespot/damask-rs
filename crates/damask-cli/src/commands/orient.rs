@@ -333,8 +333,10 @@ pub(crate) fn collect(
     let mut suspect_spans: Vec<SuspectSpan> = Vec::new();
     for span in spans_map.values() {
         let resolution = span.resolution.as_deref().unwrap_or("exact");
-        let recency = span.recency.as_deref().unwrap_or("unknown");
-        let suspect = resolution != "exact" || recency == "file_changed";
+        // Only anchors that actually moved/broke are suspect. An exact anchor
+        // on a dirty file (recency=file_changed) is merely uncommitted, not
+        // stale — it must not inflate the trust warning.
+        let suspect = resolution != "exact";
         if !suspect {
             continue;
         }

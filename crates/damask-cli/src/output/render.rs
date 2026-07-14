@@ -13,14 +13,17 @@ use damask_store::RankedEdge;
 
 use super::glyphs;
 
-/// Freshness glyph per spec §10.3, from a span's stored resolution/recency.
+/// Freshness glyph from a span's stored resolution/recency. Resolution leads:
+/// missing/unresolved → gone, relocated → moved. Only an EXACT anchor consults
+/// recency — and there `file_changed` (dirty working tree) is neutral grey
+/// (uncommitted), not an alarm. Exact + committed/clean is fresh.
 pub fn freshness_glyph(resolution: Option<&str>, recency: Option<&str>) -> &'static str {
     match (resolution, recency) {
         (Some("missing"), _) => glyphs::UNRESOLVED,
         (Some("unresolved"), _) => glyphs::UNRESOLVED,
         (Some("relocated"), _) => glyphs::RELOCATED,
-        (_, Some("file_changed")) => glyphs::FILE_CHANGED,
-        (Some("exact"), Some("unchanged")) => glyphs::EXACT_UNCHANGED,
+        (Some("exact"), Some("file_changed")) => glyphs::UNCOMMITTED,
+        (Some("exact"), _) => glyphs::EXACT_UNCHANGED,
         _ => "",
     }
 }
@@ -33,7 +36,9 @@ pub fn freshness_words(resolution: Option<&str>, recency: Option<&str>) -> &'sta
         (Some("missing"), _) => " [\u{274C} anchor code no longer exists]",
         (Some("unresolved"), _) => " [\u{274C} anchor unresolvable]",
         (Some("relocated"), _) => " [\u{21AA} code moved]",
-        (_, Some("file_changed")) => " [\u{26A0} file changed since recorded]",
+        (Some("exact"), Some("file_changed")) => {
+            " [\u{26AA} uncommitted — anchor matches, file not yet committed]"
+        }
         _ => "",
     }
 }
@@ -142,17 +147,36 @@ mod tests {
             (Some("relocated"), Some("unchanged")),
             (None, Some("file_changed")),
             (Some("exact"), Some("unchanged")),
+            (Some("exact"), Some("file_changed")),
             (None, None),
         ];
         for (res, rec) in cases {
             let glyph = freshness_glyph(res, rec);
             let words = freshness_words(res, rec);
+            // A "quiet" glyph (empty, or the plain ✅ fresh mark) pairs with no
+            // words; any marker glyph pairs with words.
+            let quiet_glyph = glyph.is_empty() || glyph == glyphs::EXACT_UNCHANGED;
             assert_eq!(
-                glyph.is_empty() || glyph == glyphs::EXACT_UNCHANGED,
+                quiet_glyph,
                 words.is_empty(),
                 "glyph/words diverge for ({res:?}, {rec:?})"
             );
         }
+    }
+
+    #[test]
+    fn exact_but_dirty_is_uncommitted_grey_not_amber() {
+        // The whole point: an exact anchor on a dirty file is neutral grey,
+        // never the ⚠ drift alarm; committed/clean exact stays fresh.
+        assert_eq!(
+            freshness_glyph(Some("exact"), Some("file_changed")),
+            glyphs::UNCOMMITTED
+        );
+        assert!(freshness_words(Some("exact"), Some("file_changed")).contains("uncommitted"));
+        assert_eq!(
+            freshness_glyph(Some("exact"), Some("unchanged")),
+            glyphs::EXACT_UNCHANGED
+        );
     }
 
     #[test]

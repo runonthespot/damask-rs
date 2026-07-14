@@ -52,9 +52,12 @@ pub fn run(reanchor: bool, format: Format) -> Result<()> {
         let Some(&n) = open_by_span.get(&s.id) else {
             continue;
         };
+        // Only relocated anchors need re-anchoring. An exact anchor on a dirty
+        // file (recency=file_changed) is merely uncommitted — re-anchoring it
+        // is a no-op churn that can't clear the state (only committing can).
         match (s.resolution.as_deref(), s.recency.as_deref()) {
             (Some("missing"), _) | (Some("unresolved"), _) => gone.push((s, n)),
-            (Some("relocated"), _) | (_, Some("file_changed")) => drifted.push((s, n)),
+            (Some("relocated"), _) => drifted.push((s, n)),
             _ => {}
         }
     }

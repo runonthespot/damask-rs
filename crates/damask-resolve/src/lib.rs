@@ -460,76 +460,35 @@ fn search_file_for_snippet(lines: &[String], snippet: &str) -> Option<(u32, u32)
     }
 }
 
-/// Compute recency by checking if the file has changed since the span's commit.
-/// Checks both committed changes (HEAD vs span commit) and uncommitted working
-/// tree changes (disk content vs HEAD blob).
-fn compute_recency(project_root: &Path, file_path: &str, commit_sha: Option<&str>) -> Recency {
-    compute_recency_with_commit_path(project_root, file_path, file_path, commit_sha)
+/// Recency now means one thing: **is the working tree dirty for this file?**
+/// It compares on-disk content against HEAD — NOT against the span's original
+/// commit. A file that merely evolved across commits but is now committed
+/// clean is `Unchanged`; only an uncommitted edit is `FileChanged`.
+///
+/// Rationale: the RESOLUTION axis already captures whether the anchor content
+/// itself moved or changed. Comparing recency against the span's old commit
+/// made every long-lived file read as changed forever (false amber). Keyed to
+/// HEAD instead, recency drives exactly one display state — grey/uncommitted —
+/// and clears the moment the work is committed. The `commit_sha` is retained
+/// in the signature for callers but no longer consulted.
+fn compute_recency(project_root: &Path, file_path: &str, _commit_sha: Option<&str>) -> Recency {
+    working_tree_recency(project_root, file_path)
 }
 
-/// Compute recency by comparing disk content at `disk_path` against the blob
-/// at `commit_path` in the given commit. This supports git renames where the
-/// current path differs from the commit path.
+/// Recency for a possibly-renamed file: still "is the working tree dirty?",
+/// measured at the file's current (disk) path against HEAD.
 fn compute_recency_with_commit_path(
     project_root: &Path,
     disk_path: &str,
-    commit_path: &str,
-    commit_sha: Option<&str>,
+    _commit_path: &str,
+    _commit_sha: Option<&str>,
 ) -> Recency {
-    let Some(sha) = commit_sha else {
-        // No commit reference — check working tree against HEAD as a best-effort
-        return working_tree_recency(project_root, disk_path);
-    };
-
-    // Try to open the git repo
-    let repo = match git2::Repository::discover(project_root) {
-        Ok(r) => r,
-        Err(_) => return Recency::Unknown,
-    };
-
-    // Parse the commit
-    let oid = match git2::Oid::from_str(sha) {
-        Ok(o) => o,
-        Err(_) => return Recency::Unknown,
-    };
-
-    let commit = match repo.find_commit(oid) {
-        Ok(c) => c,
-        Err(_) => return Recency::Unknown,
-    };
-
-    // Get the file blob at that commit
-    let tree = match commit.tree() {
-        Ok(t) => t,
-        Err(_) => return Recency::Unknown,
-    };
-
-    let span_entry = match tree.get_path(Path::new(commit_path)) {
-        Ok(e) => e,
-        Err(_) => return Recency::Unknown,
-    };
-
-    // Compare disk content against the commit blob. This catches both committed
-    // and uncommitted changes in one comparison.
-    let abs_path = project_root.join(disk_path);
-    if let Ok(disk_content) = fs::read(&abs_path) {
-        let span_blob = match repo.find_blob(span_entry.id()) {
-            Ok(b) => b,
-            Err(_) => return Recency::Unknown,
-        };
-        if disk_content == span_blob.content() {
-            return Recency::Unchanged;
-        } else {
-            return Recency::FileChanged;
-        }
-    }
-
-    // File doesn't exist on disk — it was removed
-    Recency::FileChanged
+    working_tree_recency(project_root, disk_path)
 }
 
-/// Best-effort recency when no commit SHA is available: compare disk content
-/// against HEAD blob.
+/// Compare disk content against the HEAD blob: matches → `Unchanged`
+/// (committed clean); differs or unreadable → `FileChanged` (uncommitted);
+/// no git or the file isn't tracked in HEAD → `Unknown`.
 fn working_tree_recency(project_root: &Path, file_path: &str) -> Recency {
     let repo = match git2::Repository::discover(project_root) {
         Ok(r) => r,

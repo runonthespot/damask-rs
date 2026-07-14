@@ -14,15 +14,20 @@ pub enum Resolution {
     Missing,
 }
 
-/// Recency axis — whether the file has changed since the span was created.
+/// Recency axis — is the file's working tree dirty? Compared against HEAD,
+/// NOT the span's original commit, so a file that merely evolved across
+/// commits but is now committed-clean is `Unchanged`; only an uncommitted
+/// edit is `FileChanged`. This drives the neutral "uncommitted" (grey)
+/// display state, orthogonal to whether the anchor content itself moved
+/// (that is the Resolution axis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Recency {
-    /// File content hash matches the span's content_hash — unchanged.
+    /// On-disk content matches HEAD — the file is committed as it stands.
     Unchanged,
-    /// File has been modified since the span was created.
+    /// On-disk content differs from HEAD — uncommitted working-tree changes.
     FileChanged,
-    /// Cannot determine recency (e.g., no content_hash on span).
+    /// Cannot determine (no git, or the file isn't tracked in HEAD).
     Unknown,
 }
 
