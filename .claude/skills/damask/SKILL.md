@@ -107,6 +107,7 @@ Run `damask help rels` for the full table. Custom types are allowed.
 ## On-Demand Reference
 
 Run `damask help <topic>` before recording or for detailed syntax:
+- `damask briefing --export` — read-only digest for a sandboxed/hookless agent (host runs it at launch, injects the output as context)
 - `damask help record` — payload envelope, confidence scale, examples
 - `damask help batch` — `$N` back-references, multi-span examples
 - `damask help where` — predicate syntax, operators, lifecycle field
